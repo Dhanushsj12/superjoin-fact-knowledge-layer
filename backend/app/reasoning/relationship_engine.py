@@ -1,24 +1,14 @@
 from typing import Dict, Any
 
+from app.reasoning.fact_matcher import facts_match
 from app.reasoning.fact_normalizer import normalize_number
 
 
-def normalize_value_and_unit(
-    value: Any,
-    unit: Any
-) -> Any:
+def normalize_value(value: Any) -> Any:
     """
-    Convert a fact's value into a comparable numeric representation.
-
-    Examples:
-        384 + K       -> 384000
-        384000 + None -> 384000
-        "2.5 million" -> 2500000
-
-    The unit is currently used as context. Magnitude expressions
-    inside the value are handled by normalize_number().
+    Convert a fact value into a comparable numeric representation
+    when possible.
     """
-
     if value is None:
         return None
 
@@ -30,53 +20,36 @@ def classify_relationship(
     fact_b: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Classify the relationship between two facts.
+    Classify the relationship between two normalized facts.
 
     Possible relationships:
-    - corroboration
-    - contradiction
-    - contextual_difference
-    - incomparable
+        - corroboration
+        - contradiction
+        - contextual_difference
+        - incomparable
+        - uncertain
+
+    Matching determines whether two facts are comparable.
+    Relationship reasoning then determines how the comparable
+    facts relate to each other.
     """
 
     # ---------------------------------------------------------
-    # 1. Check entity
+    # 1. Determine whether the facts are comparable
     # ---------------------------------------------------------
 
-    entity_a = fact_a.get("entity_key", "")
-    entity_b = fact_b.get("entity_key", "")
-
-    if entity_a and entity_b and entity_a != entity_b:
+    if not facts_match(fact_a, fact_b):
         return {
             "relationship": "incomparable",
-            "reason": "The entities are different."
+            "reason": "The facts do not refer to the same underlying entity and metric."
         }
 
     # ---------------------------------------------------------
-    # 2. Check metric
+    # 2. Compare reporting period
     # ---------------------------------------------------------
 
-    metric_a = fact_a.get("metric_key", "")
-    metric_b = fact_b.get("metric_key", "")
-
-    if not metric_a or not metric_b:
-        return {
-            "relationship": "incomparable",
-            "reason": "One or both facts are missing a metric."
-        }
-
-    if metric_a != metric_b:
-        return {
-            "relationship": "incomparable",
-            "reason": "The metrics are different."
-        }
-
-    # ---------------------------------------------------------
-    # 3. Check period
-    # ---------------------------------------------------------
-
-    period_a = fact_a.get("period_key")
-    period_b = fact_b.get("period_key")
+    period_a = fact_a.get("period_key", "")
+    period_b = fact_b.get("period_key", "")
 
     if period_a and period_b and period_a != period_b:
         return {
@@ -85,11 +58,11 @@ def classify_relationship(
         }
 
     # ---------------------------------------------------------
-    # 4. Check scope
+    # 3. Compare scope
     # ---------------------------------------------------------
 
-    scope_a = fact_a.get("scope_key")
-    scope_b = fact_b.get("scope_key")
+    scope_a = fact_a.get("scope_key", "")
+    scope_b = fact_b.get("scope_key", "")
 
     if scope_a and scope_b and scope_a != scope_b:
         return {
@@ -98,46 +71,44 @@ def classify_relationship(
         }
 
     # ---------------------------------------------------------
-    # 5. Normalize values
+    # 4. Check whether values are available
     # ---------------------------------------------------------
 
-    value_a = normalize_value_and_unit(
-        fact_a.get("value"),
-        fact_a.get("unit_key")
-    )
-
-    value_b = normalize_value_and_unit(
-        fact_b.get("value"),
-        fact_b.get("unit_key")
-    )
+    value_a = normalize_value(fact_a.get("value"))
+    value_b = normalize_value(fact_b.get("value"))
 
     if value_a is None or value_b is None:
         return {
-            "relationship": "incomparable",
-            "reason": "One or both facts do not contain a comparable value."
+            "relationship": "uncertain",
+            "reason": (
+                "The facts appear comparable, but one or both "
+                "facts do not contain a comparable value."
+            )
         }
 
     # ---------------------------------------------------------
-    # 6. Check units
+    # 5. Compare units
     # ---------------------------------------------------------
 
     unit_a = fact_a.get("unit_key", "")
     unit_b = fact_b.get("unit_key", "")
 
-    # If units are explicitly different and cannot be reconciled
-    # through the numeric normalization above, treat them as
-    # contextual differences.
     if unit_a and unit_b and unit_a != unit_b:
 
-        # Some units are simply different textual representations.
         equivalent_units = {
-            "k": "k",
             "thousand": "k",
+            "k": "k",
+
             "m": "m",
             "mn": "m",
             "million": "m",
+
             "bn": "bn",
             "billion": "bn",
+
+            "percent": "%",
+            "percentage": "%",
+            "%": "%",
         }
 
         normalized_unit_a = equivalent_units.get(unit_a, unit_a)
@@ -150,7 +121,7 @@ def classify_relationship(
             }
 
     # ---------------------------------------------------------
-    # 7. Compare normalized values
+    # 6. Compare normalized values
     # ---------------------------------------------------------
 
     if value_a == value_b:
@@ -165,7 +136,7 @@ def classify_relationship(
         }
 
     # ---------------------------------------------------------
-    # 8. Same context, different normalized values
+    # 7. Same context but different values
     # ---------------------------------------------------------
 
     return {
