@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Fact Knowledge Layer</title>
+
+    <link
+        rel="stylesheet"
+        href="style.css"
+    >
+</head>
+
+<body>
+
+    <header class="topbar">
+        <div>
+            <h1>Fact Knowledge Layer</h1>
+            <p>
+                Extract, verify, and compare facts across PDF documents.
+            </p>
+        </div>
+
+        <div class="status-badge">
+            <span class="status-dot"></span>
+            API Ready
+        </div>
+    </header>
+
+
+    <main class="container">
+
+        <!-- Upload Section -->
+        <section class="card upload-card">
+
+            <div class="section-heading">
+                <div>
+                    <h2>Upload Documents</h2>
+                    <p>
+                        Upload one or more PDF documents to build the
+                        knowledge layer.
+                    </p>
+                </div>
+            </div>
+
+            <label
+                for="pdfInput"
+                class="drop-zone"
+                id="dropZone"
+            >
+
+                <div class="upload-icon">↑</div>
+
+                <h3>Choose PDF documents</h3>
+
+                <p>
+                    Click here to select one or multiple PDFs
+                </p>
+
+                <span class="browse-text">
+                    Browse files
+                </span>
+
+            </label>
+
+            <input
+                type="file"
+                id="pdfInput"
+                accept=".pdf,application/pdf"
+                multiple
+                hidden
+            >
+
+            <div
+                id="fileList"
+                class="file-list"
+            ></div>
+
+            <button
+                id="processButton"
+                class="primary-button"
+                disabled
+            >
+                Process Documents
+            </button>
+
+            <div
+                id="errorMessage"
+                class="error-message hidden"
+            ></div>
+
+            <div
+                id="loadingMessage"
+                class="loading-message hidden"
+            >
+                <div class="spinner"></div>
+                <span>Processing documents...</span>
+            </div>
+
+        </section>
+
+
+        <!-- Summary -->
+        <section
+            id="resultsSection"
+            class="hidden"
+        >
+
+            <div class="section-title">
+                <h2>Knowledge Layer Results</h2>
+
+                <button
+                    id="clearButton"
+                    class="secondary-button"
+                >
+                    Clear Results
+                </button>
+            </div>
+
+
+            <div class="summary-grid">
+
+                <div class="summary-card">
+                    <span class="summary-label">
+                        Documents
+                    </span>
+
+                    <strong id="documentCount">
+                        0
+                    </strong>
+                </div>
+
+
+                <div class="summary-card">
+                    <span class="summary-label">
+                        Verified Facts
+                    </span>
+
+                    <strong id="factCount">
+                        0
+                    </strong>
+                </div>
+
+
+                <div class="summary-card">
+                    <span class="summary-label">
+                        Relationships
+                    </span>
+
+                    <strong id="relationshipCount">
+                        0
+                    </strong>
+                </div>
+
+            </div>
+
+
+            <!-- Facts -->
+            <section class="card">
+
+                <div class="section-heading">
+                    <div>
+                        <h2>Extracted Facts</h2>
+
+                        <p>
+                            Facts are linked directly to their source
+                            evidence.
+                        </p>
+                    </div>
+
+                    <span
+                        id="factBadge"
+                        class="count-badge"
+                    >
+                        0 facts
+                    </span>
+                </div>
+
+
+                <div
+                    id="factsContainer"
+                    class="facts-container"
+                ></div>
+
+            </section>
+
+
+            <!-- Relationships -->
+            <section class="card">
+
+                <div class="section-heading">
+
+                    <div>
+                        <h2>Cross-Document Relationships</h2>
+
+                        <p>
+                            Relationships are determined after
+                            normalization and context comparison.
+                        </p>
+                    </div>
+
+                    <span
+                        id="relationshipBadge"
+                        class="count-badge"
+                    >
+                        0 relationships
+                    </span>
+
+                </div>
+
+
+                <div
+                    id="relationshipsContainer"
+                    class="relationships-container"
+                ></div>
+
+            </section>
+
+        </section>
+
+    </main>
+
+
+    <footer>
+        <p>
+            Superjoin Engineering Intern Assignment ·
+            Fact Knowledge Layer
+        </p>
+    </footer>
+
+
+    <script src="app.js"></script>
+
+</body>
+</html>

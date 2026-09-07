@@ -3,6 +3,7 @@ from tempfile import TemporaryDirectory
 from typing import List
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.pipeline import process_documents
 
@@ -11,6 +12,17 @@ app = FastAPI(
     title="Superjoin Fact Knowledge Layer",
     description="Extract and compare facts across PDF documents.",
     version="1.0.0",
+)
+
+
+# Allow the local frontend to communicate with the API.
+# This is appropriate for the local prototype/demo.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
