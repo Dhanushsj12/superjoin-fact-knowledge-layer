@@ -4,7 +4,8 @@ from typing import List, Dict
 def create_chunks(
     pages: List[Dict],
     chunk_size: int = 1500,
-    min_chunk_size: int = 100
+    min_chunk_size: int = 100,
+    source_document: str = ""
 ) -> List[Dict]:
 
     chunks = []
@@ -23,8 +24,9 @@ def create_chunks(
                 continue
 
             chunks.append({
-                "page_number": page["page_number"],
-                "chunk_text": chunk_text
-            })
+    "page_number": page["page_number"],
+    "chunk_text": chunk_text,
+    "source_document": source_document
+})
 
     return chunks

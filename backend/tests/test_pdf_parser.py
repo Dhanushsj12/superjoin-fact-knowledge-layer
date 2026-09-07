@@ -24,7 +24,11 @@ print(f"Total pages extracted: {len(pages)}")
 
 
 # Step 2: Create chunks
-chunks = create_chunks(pages, chunk_size=1500)
+chunks = create_chunks(
+    pages,
+    chunk_size=1500,
+    source_document=pdf_path.name
+)
 
 print(f"Total chunks created: {len(chunks)}")
 
