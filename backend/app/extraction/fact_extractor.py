@@ -2,6 +2,7 @@ import json
 from typing import List, Dict
 
 from .llm_client import generate_text
+from app.reasoning.evidence_verifier import verify_evidence
 
 
 def extract_facts_from_chunks(chunks: List[Dict]) -> List[Dict]:
@@ -9,7 +10,7 @@ def extract_facts_from_chunks(chunks: List[Dict]) -> List[Dict]:
     Extract structured facts from PDF chunks using Gemini.
 
     Each fact keeps the original evidence, page number,
-    and source document for traceability.
+    source document, and evidence verification status.
     """
 
     facts = []
@@ -64,6 +65,13 @@ Document text:
             for fact in extracted:
                 fact["page_number"] = chunk["page_number"]
                 fact["source_document"] = chunk.get("source_document")
+
+                # Verify that Gemini's evidence actually exists
+                # in the original PDF chunk.
+                fact["evidence_verified"] = verify_evidence(
+                    fact,
+                    chunk["chunk_text"]
+                )
 
                 facts.append(fact)
 
