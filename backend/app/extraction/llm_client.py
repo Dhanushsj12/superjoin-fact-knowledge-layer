@@ -1,25 +1,56 @@
 import os
 
 from dotenv import load_dotenv
-from google import genai
+from groq import Groq
 
 
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
+
+api_key = os.getenv("GROQ_API_KEY")
 
 if not api_key:
-    raise ValueError("GEMINI_API_KEY is not configured in the .env file.")
+    raise ValueError(
+        "GROQ_API_KEY is not configured in the .env file."
+    )
 
-client = genai.Client(api_key=api_key)
+
+client = Groq(
+    api_key=api_key,
+    max_retries=0
+)
+
+
+MODEL_NAME = "openai/gpt-oss-20b"
 
 
 def generate_text(prompt: str) -> str:
-    """Send a prompt to Gemini and return the generated text."""
+    """
+    Send a prompt to Groq and return the model response.
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
+    The LLM provider is isolated behind this function so the
+    extraction pipeline remains provider-independent.
+    """
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a fact extraction system. "
+                    "Always return valid JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        temperature=0,
+        response_format={
+            "type": "json_object"
+        },
     )
 
-    return response.text
+    return response.choices[0].message.content

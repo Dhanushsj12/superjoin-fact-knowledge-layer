@@ -56,7 +56,9 @@ async def ingest_documents(
             detail="At least one PDF file is required."
         )
 
+    # Validate all uploaded files before processing.
     for uploaded_file in files:
+
         filename = uploaded_file.filename or ""
 
         if not filename.lower().endswith(".pdf"):
@@ -66,10 +68,12 @@ async def ingest_documents(
             )
 
     try:
+
         with TemporaryDirectory() as temp_dir:
 
             pdf_paths = []
 
+            # Save uploaded PDFs temporarily.
             for uploaded_file in files:
 
                 filename = Path(
@@ -90,6 +94,7 @@ async def ingest_documents(
 
                 pdf_paths.append(str(file_path))
 
+            # Send all PDFs through the knowledge-layer pipeline.
             result = process_documents(pdf_paths)
 
             return result
@@ -98,6 +103,7 @@ async def ingest_documents(
         raise
 
     except Exception as exc:
+
         raise HTTPException(
             status_code=500,
             detail=f"Document processing failed: {str(exc)}"
