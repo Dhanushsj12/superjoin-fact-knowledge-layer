@@ -3,4 +3,4 @@ uvicorn
 pymupdf
 python-dotenv
 pydantic
-openai
+google-genai
