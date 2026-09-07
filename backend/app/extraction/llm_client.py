@@ -21,7 +21,7 @@ client = Groq(
 )
 
 
-MODEL_NAME = "openai/gpt-oss-20b"
+MODEL_NAME = "qwen/qwen3.8-27b"
 
 
 def generate_text(prompt: str) -> str:

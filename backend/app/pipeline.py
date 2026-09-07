@@ -51,7 +51,7 @@ def process_pdf(pdf_path: str) -> List[Dict[str, Any]]:
 
     raw_facts = extract_facts_from_batches(
     candidate_chunks,
-    batch_size=10
+    batch_size=3
 )
 
     normalized_facts = []

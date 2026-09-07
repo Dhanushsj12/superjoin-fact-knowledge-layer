@@ -8,7 +8,7 @@ from app.extraction.batch_processor import create_batches
 
 def extract_facts_from_batches(
     chunks: List[Dict],
-    batch_size: int = 10
+    batch_size: int = 3
 ) -> List[Dict]:
     """
     Extract meaningful structured facts from document chunks
