@@ -7,53 +7,99 @@ from app.reasoning.evidence_verifier import verify_evidence
 
 def extract_facts_from_chunks(chunks: List[Dict]) -> List[Dict]:
     """
-    Extract structured facts from PDF chunks using Gemini.
+    Extract meaningful structured facts from document chunks using Gemini.
 
-    Each fact keeps the original evidence, page number,
-    source document, and evidence verification status.
+    The extractor is intentionally generic and does not contain
+    document-specific rules.
     """
 
     facts = []
 
-    for chunk in chunks:
+    total_chunks = len(chunks)
+
+    for index, chunk in enumerate(chunks, start=1):
+
+        print(f"Processing chunk {index}/{total_chunks} "
+              f"(page {chunk['page_number']})...")
+
         prompt = f"""
-You are extracting factual information from a document.
+You are a fact extraction system for a generic knowledge layer.
 
-Extract only meaningful numerical or semantic facts from the text below.
+Your task is to extract ONLY meaningful factual statements from
+the provided document text.
 
-For each fact return these fields:
+A meaningful fact should describe information that could be useful
+for comparing knowledge across documents.
 
-- entity: The person, company, organization, product, country, etc.
+Prioritize facts such as:
+- financial metrics
+- operational metrics
+- business performance
+- growth rates
+- quantities
+- prices
+- economic indicators
+- market statistics
+- company or organizational performance
+- dates that define the period of a reported fact
+- meaningful qualitative statements about performance, position,
+  events, or conditions
+
+Do NOT extract document metadata or administrative information such as:
+- stock exchange filing codes
+- stock symbols
+- website addresses
+- membership numbers
+- digital signatures
+- page numbers
+- document formatting
+- regulatory boilerplate
+- navigation text
+- contact information
+
+For each meaningful fact return:
+
+- entity: The person, company, organization, product, country,
+  industry, or other subject of the fact.
 - metric: What is being measured or stated.
 - value: Numerical value if available, otherwise null.
 - unit: Unit such as %, INR, USD, million, tonnes, employees, etc.
 - period: Time period such as FY2024, Q4 FY24, March 2024, etc.
-- scope: Geographic, business, operational, or other scope if explicitly stated.
+- scope: Geographic, business, operational, or other scope if
+  explicitly stated.
 - evidence: Exact text from the document supporting the fact.
 
 Rules:
-1. Do not invent information.
-2. Only extract facts actually supported by the provided text.
-3. If a field is not available, use null.
-4. Evidence MUST be copied exactly from the provided text.
-5. Extract meaningful facts, not navigation text or decorative headings.
-6. Do not calculate or infer values that are not explicitly supported.
-7. Return ONLY a JSON array.
-8. If there are no meaningful facts, return [].
+1. Extract only information explicitly supported by the text.
+2. Do not invent or calculate values.
+3. Do not extract administrative/document metadata.
+4. Preserve the exact evidence text from the source.
+5. If a field is unavailable, return null.
+6. A numerical fact should retain its magnitude when explicitly
+   present in the evidence, such as K, Mn, million, or billion.
+7. Qualitative facts are allowed when they are meaningful and
+   potentially comparable across documents.
+8. Avoid duplicate facts from the same passage.
+9. Return ONLY a JSON array.
+10. If there are no meaningful facts, return [].
 
 Document text:
+
 {chunk["chunk_text"]}
 """
 
         try:
             output = generate_text(prompt)
 
-            # Gemini may wrap JSON inside Markdown code fences.
             cleaned_output = output.strip()
 
             if cleaned_output.startswith("```"):
-                cleaned_output = cleaned_output.replace("```json", "", 1)
-                cleaned_output = cleaned_output.replace("```", "", 1)
+                cleaned_output = cleaned_output.replace(
+                    "```json", "", 1
+                )
+                cleaned_output = cleaned_output.replace(
+                    "```", "", 1
+                )
                 cleaned_output = cleaned_output.strip()
 
             extracted = json.loads(cleaned_output)
@@ -63,24 +109,43 @@ Document text:
                 continue
 
             for fact in extracted:
+
+                if not isinstance(fact, dict):
+                    continue
+
                 fact["page_number"] = chunk["page_number"]
                 fact["source_document"] = chunk.get("source_document")
 
-                # Verify that Gemini's evidence actually exists
-                # in the original PDF chunk.
                 fact["evidence_verified"] = verify_evidence(
                     fact,
                     chunk["chunk_text"]
                 )
 
-                facts.append(fact)
+                # Only retain facts whose evidence can actually
+                # be found in the source document.
+                if fact["evidence_verified"]:
+                    facts.append(fact)
 
         except json.JSONDecodeError:
             print("Could not parse Gemini response as JSON.")
-            print("Gemini response:")
-            print(output)
+            continue
 
         except Exception as error:
+
+            error_text = str(error)
+
+            if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+                print(
+                    "Gemini quota exhausted. "
+                    "Stopping extraction gracefully."
+                )
+                break
+
             print(f"Gemini extraction failed: {error}")
+
+    print(
+        f"Extraction complete: {len(facts)} verified facts "
+        f"from {total_chunks} chunks."
+    )
 
     return facts
