@@ -5,7 +5,7 @@ from app.extraction.pdf_parser import extract_pdf_text
 from app.extraction.chunker import create_chunks
 from app.extraction.fact_extractor import extract_facts_from_chunks
 from app.reasoning.fact_normalizer import normalize_fact
-
+from app.reasoning.fact_deduplicator import deduplicate_facts
 
 def process_pdf(pdf_path: str) -> List[Dict[str, Any]]:
     """
@@ -68,4 +68,6 @@ def process_pdf(pdf_path: str) -> List[Dict[str, Any]]:
 
         normalized_facts.append(normalized_fact)
 
-    return normalized_facts
+    deduplicated_facts = deduplicate_facts(normalized_facts)
+
+    return deduplicated_facts
