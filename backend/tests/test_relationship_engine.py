@@ -199,3 +199,83 @@ def test_magnitude_reconciliation():
     assert result["relationship"] == "corroboration"
     assert result["normalized_value_a"] == 384000.0
     assert result["normalized_value_b"] == 384000.0
+def test_million_and_absolute_value_corroborate():
+    raw_fact_a = {
+        "entity": "company a",
+        "metric": "revenue",
+        "value": 2.5,
+        "unit": "million",
+        "period": "2025",
+        "scope": "india",
+        "evidence": "2.5 million revenue",
+    }
+
+    raw_fact_b = {
+        "entity": "company a",
+        "metric": "revenue",
+        "value": 2500000,
+        "unit": "million",
+        "period": "2025",
+        "scope": "india",
+        "evidence": "2500000 revenue",
+    }
+
+    fact_a = normalize_fact(raw_fact_a)
+    fact_b = normalize_fact(raw_fact_b)
+
+    result = classify_relationship(fact_a, fact_b)
+
+    assert result["relationship"] == "corroboration"
+
+
+def test_billion_and_million_can_be_reconciled():
+    raw_fact_a = {
+        "entity": "company a",
+        "metric": "revenue",
+        "value": 1,
+        "unit": "billion",
+        "period": "2025",
+        "scope": "india",
+        "evidence": "1 billion revenue",
+    }
+
+    raw_fact_b = {
+        "entity": "company a",
+        "metric": "revenue",
+        "value": 1000,
+        "unit": "million",
+        "period": "2025",
+        "scope": "india",
+        "evidence": "1000 million revenue",
+    }
+
+    fact_a = normalize_fact(raw_fact_a)
+    fact_b = normalize_fact(raw_fact_b)
+
+    result = classify_relationship(fact_a, fact_b)
+
+    assert result["relationship"] == "corroboration"
+
+
+def test_different_unreconcilable_units_are_contextual_difference():
+    fact_a = {
+        "entity_key": "company a",
+        "metric_key": "revenue",
+        "value": 1000,
+        "unit_key": "cr",
+        "period_key": "2025",
+        "scope_key": "india",
+    }
+
+    fact_b = {
+        "entity_key": "company a",
+        "metric_key": "revenue",
+        "value": 1000,
+        "unit_key": "tons",
+        "period_key": "2025",
+        "scope_key": "india",
+    }
+
+    result = classify_relationship(fact_a, fact_b)
+
+    assert result["relationship"] == "contextual_difference"
