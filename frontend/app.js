@@ -1,4 +1,4 @@
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = "https://superjoin-fact-knowledge-api.onrender.com";
 
 const pdfInput = document.getElementById("pdfInput");
 const dropZone = document.getElementById("dropZone");
