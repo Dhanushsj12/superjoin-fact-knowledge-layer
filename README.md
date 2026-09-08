@@ -248,7 +248,11 @@ Example result:
 ```
 
 The relationship engine also handles wording differences by comparing normalized fact fields and semantic context rather than requiring identical evidence text.
+### Corroboration Detection
 
+![Corroboration Detection](screenshots/relationships.png)
+
+This demonstrates the cross-document relationship view used to identify corroborating facts despite wording differences.
 ---
 
 ### 5.2 Contradiction
