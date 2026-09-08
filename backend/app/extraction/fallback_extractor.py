@@ -42,70 +42,71 @@ PERCENT_WORD_RE = re.compile(
 
 CURRENCY_RE = re.compile(
     rf"""
-    (?:
-        ₹\s*({NUMBER_PATTERN})
-        |
-        Rs\.?\s*({NUMBER_PATTERN})
-        |
-        INR\s*({NUMBER_PATTERN})
-        |
-        \$
-        \s*({NUMBER_PATTERN})
-        |
-        USD\s*({NUMBER_PATTERN})
-        |
-        US\$
-        \s*({NUMBER_PATTERN})
-        |
-        €
-        \s*({NUMBER_PATTERN})
-        |
-        EUR\s*({NUMBER_PATTERN})
-        |
-        £
-        \s*({NUMBER_PATTERN})
-        |
-        GBP\s*({NUMBER_PATTERN})
+    (?P<prefix>
+        ₹ | Rs\.? | INR | US\$ | USD | \$ | € | EUR | £ | GBP
     )
+    \s*
+    (?P<number>
+        {NUMBER_PATTERN}
+    )
+    \s*
+    (?P<magnitude>
+        trillion | billion | million | thousand |
+        crore | crores | lakh | lakhs |
+        tn | bn | mn | k | t | b | m
+    )?
     """,
     re.VERBOSE | re.IGNORECASE,
 )
+
+
 
 NUMBER_UNIT_RE = re.compile(
     rf"""
     ({NUMBER_PATTERN})
     \s*
     (
-        thousand
-        |million
-        |billion
-        |trillion
-        |mn
-        |bn
-        |tn
-        |crore
-        |crores
-        |lakh
-        |lakhs
-        |k
-        |m
-        |b
-        |t
-        |tonnes?
-        |tons?
-        |kg
-        |g
-        |km
-        |miles?
-        |hours?
-        |days?
-        |months?
-        |years?
+        million\s+shipments?/day
+        |million\s+orders?/day
+        |million\s+packages?/day
+        |million\s+parcels?/day
+        |million\s+bags?/day
+        |million\s+units?/day
+        |million\s+shipments?/month
+        |million\s+orders?/month
+        |million\s+packages?/month
+        |million\s+units?/month
+
+        |shipments?/day
+        |orders?/day
+        |packages?/day
+        |parcels?/day
+        |bags?/day
+        |units?/day
+        |shipments?/month
+        |orders?/month
+        |packages?/month
+        |units?/month
+
+        |trillion |billion |million |thousand
+        |mn |bn |tn
+        |crore |crores |lakh |lakhs
+        |k |m |b |t
+
+        |tonnes? |tons? |kg |kgs |g |grams?
+        |kw |mw |gw
+        |km |kms |miles?
+        |hours? |days? |months? |years?
+
+        |employees? |customers? |users? |vehicles?
+        |locations? |stores? |facilities?
     )
     \b
     """,
     re.VERBOSE | re.IGNORECASE,
 )
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -720,68 +721,71 @@ def _extract_currency(
     text: str,
     metric_position: int = 0,
 ) -> Optional[Tuple[float, str]]:
+    """
+    Extract a monetary value while preserving an optional magnitude.
+
+    Examples:
+        $1 billion              -> (1, "$ billion")
+        US$3.9 trillion         -> (3.9, "$ trillion")
+        ₹16,538.97 million      -> (16538.97, "₹ million")
+        Rs 46 Cr                -> (46, "₹ crore")
+        $500                    -> (500, "$")
+    """
+
     candidates = []
 
     for match in CURRENCY_RE.finditer(text):
-        groups = match.groups()
-
-        raw_number = next(
-            (
-                group
-                for group in groups
-                if group is not None
-            ),
-            None,
-        )
-
+        raw_number = match.group("number")
         if raw_number is None:
             continue
 
         value = _clean_number(raw_number)
+        if _is_year(value):
+            continue
 
-        prefix = match.group(0).strip()
+        prefix = match.group("prefix").strip().lower()
+        magnitude = match.group("magnitude")
 
-        if prefix.startswith("₹") or prefix.lower().startswith(("rs", "inr")):
-            unit = "₹"
-
-        elif prefix.startswith("$") or prefix.lower().startswith(("usd", "us$")):
-            unit = "$"
-
-        elif prefix.startswith("€") or prefix.lower().startswith("eur"):
-            unit = "€"
-
-        elif prefix.startswith("£") or prefix.lower().startswith("gbp"):
-            unit = "£"
-
+        if prefix.startswith(("₹", "rs", "inr")):
+            currency = "₹"
+        elif prefix.startswith(("us$", "$", "usd")):
+            currency = "$"
+        elif prefix.startswith(("€", "eur")):
+            currency = "€"
+        elif prefix.startswith(("£", "gbp")):
+            currency = "£"
         else:
-            unit = None
+            currency = prefix
 
-        distance = abs(
-            match.start() - metric_position
+        unit = (
+            f"{currency} {magnitude.lower()}"
+            if magnitude
+            else currency
         )
 
-        candidates.append(
-            (
-                distance,
-                value,
-                unit,
-            )
-        )
+        distance = abs(match.start() - metric_position)
+        candidates.append((distance, value, unit))
 
     if not candidates:
         return None
 
     candidates.sort(key=lambda item: item[0])
-
     _, value, unit = candidates[0]
 
     return _format_value(value), unit
+
 
 
 def _extract_number_with_unit(
     text: str,
     metric_position: int = 0,
 ) -> Optional[Tuple[float, str]]:
+    """
+    Extract a number followed by a semantic unit.
+
+    Compound units such as "million shipments/day" are preserved.
+    """
+
     candidates = []
 
     for match in NUMBER_UNIT_RE.finditer(text):
@@ -789,11 +793,9 @@ def _extract_number_with_unit(
         raw_unit = match.group(2)
 
         value = _clean_number(raw_number)
-        unit = raw_unit.lower()
+        unit = " ".join(raw_unit.lower().split())
 
-        distance = abs(
-            match.start() - metric_position
-        )
+        distance = abs(match.start() - metric_position)
 
         candidates.append(
             (
@@ -807,10 +809,10 @@ def _extract_number_with_unit(
         return None
 
     candidates.sort(key=lambda item: item[0])
-
     _, value, unit = candidates[0]
 
     return _format_value(value), unit
+
 
 
 def _extract_plain_number(
@@ -884,39 +886,27 @@ def _extract_value_and_unit(
     Extract the numeric value closest to the metric.
 
     Priority:
-    1. percentage
-    2. currency
-    3. number + unit
-    4. plain number
+        1. percentage
+        2. currency + optional magnitude
+        3. number + semantic unit
+        4. plain number
     """
-    percentage = _extract_percentage(
-        text,
-        metric_position,
-    )
 
+    percentage = _extract_percentage(text, metric_position)
     if percentage:
         return percentage
 
-    currency = _extract_currency(
-        text,
-        metric_position,
-    )
-
+    currency = _extract_currency(text, metric_position)
     if currency:
         return currency
 
-    number_unit = _extract_number_with_unit(
-        text,
-        metric_position,
-    )
-
+    number_unit = _extract_number_with_unit(text, metric_position)
     if number_unit:
         return number_unit
 
-    return _extract_plain_number(
-        text,
-        metric_position,
-    )
+    return _extract_plain_number(text, metric_position)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -932,77 +922,102 @@ def _is_metric_value_compatible(
     """
     Generic semantic compatibility checks.
 
-    The fallback should prefer rejecting an ambiguous candidate over
+    The fallback prefers rejecting an ambiguous candidate over
     manufacturing a misleading fact.
     """
-    lowered = text.lower()
-    unit_normalized = unit.lower() if isinstance(unit, str) else unit
 
-    # Years should almost never become metric values.
-    if _is_year(float(value)):
+    lowered = text.lower()
+
+    unit_normalized = (
+        unit.strip().lower()
+        if isinstance(unit, str)
+        else ""
+    )
+
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
         return False
+
+    if _is_year(numeric_value):
+        return False
+
+    currency_units = {"₹", "$", "€", "£", "inr", "usd", "eur", "gbp"}
+    percentage_units = {"%", "percent", "percentage", "pct"}
+
+    physical_units = {
+        "tonne", "tonnes", "ton", "tons",
+        "kg", "kgs", "g", "grams",
+        "km", "kms", "mile", "miles",
+        "kw", "mw", "gw",
+    }
+
+    time_units = {
+        "second", "seconds",
+        "minute", "minutes",
+        "hour", "hours",
+        "day", "days",
+        "month", "months",
+        "year", "years",
+    }
+
+    rate_units = {"bps", "basis points"}
+
+    magnitude_units = {
+        "k", "thousand",
+        "m", "mn", "million",
+        "b", "bn", "billion",
+        "t", "tn", "trillion",
+        "lakh", "lakhs",
+        "crore", "crores",
+    }
+
+    throughput_unit = (
+        "/" in unit_normalized
+        and any(
+            token in unit_normalized
+            for token in ["day", "month", "year", "hour", "minute"]
+        )
+    )
 
     # ---------------------------------------------------------------
     # Count metrics
     # ---------------------------------------------------------------
 
     if metric in COUNT_METRICS:
-        # A percentage is not a customer/employee count.
-        if unit_normalized in {"%", "percent", "percentage"}:
+        if unit_normalized in percentage_units:
             return False
 
-        # Count metrics should not consume currency values.
-        if unit_normalized in {"₹", "$", "€", "£"}:
+        if unit_normalized in currency_units:
             return False
 
-        # Time/weight/distance units are not counts.
-        if unit_normalized in {
-            "tonne",
-            "tonnes",
-            "ton",
-            "tons",
-            "kg",
-            "g",
-            "km",
-            "mile",
-            "miles",
-            "hour",
-            "hours",
-            "day",
-            "days",
-            "month",
-            "months",
-            "year",
-            "years",
-        }:
+        if unit_normalized in physical_units:
             return False
 
-        # Monetary language near a count metric is suspicious unless the
-        # sentence explicitly establishes a count concept.
+        if unit_normalized in time_units:
+            return False
+
+        if unit_normalized in rate_units:
+            return False
+
+        if throughput_unit:
+            return False
+
         monetary_words = [
-            "revenue",
-            "salary",
-            "remuneration",
-            "payment",
-            "expense",
-            "spend",
-            "spending",
+            "revenue", "salary", "remuneration",
+            "payment", "expense", "spend", "spending",
+        ]
+
+        count_words = [
+            "employees", "employee count",
+            "workforce", "headcount",
+            "customers", "customer base",
+            "users", "user base",
+            "number of customers",
+            "number of employees",
         ]
 
         if any(word in lowered for word in monetary_words):
-            count_words = [
-                "employees",
-                "employee count",
-                "workforce",
-                "headcount",
-                "customers",
-                "customer base",
-                "users",
-                "user base",
-                "number of customers",
-                "number of employees",
-            ]
-
             if not any(word in lowered for word in count_words):
                 return False
 
@@ -1011,9 +1026,15 @@ def _is_metric_value_compatible(
     # ---------------------------------------------------------------
 
     if metric in PERCENT_METRICS:
-        if unit_normalized != "%":
-            if not re.search(
-                r"\b(percent|percentage|rate)\b|%",
+        if unit_normalized not in percentage_units:
+            if unit_normalized in rate_units:
+                if not re.search(
+                    r"\b(?:rate|margin|growth|change|increase|decrease)\b",
+                    lowered,
+                ):
+                    return False
+            elif not re.search(
+                r"\b(?:percent|percentage|rate|margin)\b|%",
                 lowered,
             ):
                 return False
@@ -1023,112 +1044,147 @@ def _is_metric_value_compatible(
     # ---------------------------------------------------------------
 
     if metric in MONETARY_METRICS:
-        # Monetary metrics should not consume percentages.
-        if unit_normalized in {"%", "percent", "percentage"}:
+        if unit_normalized in percentage_units:
             return False
 
-        # Monetary metrics should not consume durations, weights, etc.
-        if unit_normalized in {
-            "tonne",
-            "tonnes",
-            "ton",
-            "tons",
-            "kg",
-            "g",
-            "km",
-            "mile",
-            "miles",
-            "hour",
-            "hours",
-            "day",
-            "days",
-            "month",
-            "months",
-            "year",
-            "years",
-        }:
+        if unit_normalized in rate_units:
             return False
 
-        monetary_unit = unit_normalized in {
-            "₹",
-            "$",
-            "€",
-            "£",
-        }
+        if unit_normalized in physical_units:
+            return False
 
-        magnitude_unit = unit_normalized in {
-            "k",
-            "thousand",
-            "m",
-            "mn",
-            "million",
-            "bn",
-            "billion",
-            "crore",
-            "crores",
-            "lakh",
-            "lakhs",
-            "b",
-            "t",
-        }
+        if unit_normalized in time_units:
+            return False
 
-        monetary_words = [
-            "revenue",
-            "income",
-            "profit",
-            "loss",
-            "debt",
-            "borrowings",
-            "investment",
-            "spend",
-            "spending",
-            "assets",
-            "cost",
-            "value",
-            "amount",
-            "usd",
-            "inr",
-            "rs.",
-        ]
+        if throughput_unit:
+            return False
 
-        if not (
-            monetary_unit
-            or magnitude_unit
-            or any(word in lowered for word in monetary_words)
+        # Explicit currency, including "$ billion"/"₹ million".
+        if unit_normalized in currency_units:
+            return True
+
+        if any(
+            unit_normalized.endswith(f" {magnitude}")
+            for magnitude in magnitude_units
         ):
-            return False
+            if any(
+                currency in unit_normalized
+                for currency in currency_units
+            ):
+                return True
+
+        if unit_normalized in magnitude_units:
+            monetary_words = [
+                "revenue", "income", "profit", "loss",
+                "debt", "borrowings", "investment",
+                "spend", "spending", "assets",
+                "cost", "value", "amount",
+                "usd", "inr", "rs.", "rupees",
+            ]
+
+            if not any(word in lowered for word in monetary_words):
+                return False
+
+        if not unit_normalized:
+            monetary_words = [
+                "revenue", "income", "profit", "loss",
+                "debt", "borrowings", "investment",
+                "spend", "spending", "assets",
+                "cost", "amount", "value",
+            ]
+
+            if not any(word in lowered for word in monetary_words):
+                return False
 
     # ---------------------------------------------------------------
     # Capacity
     # ---------------------------------------------------------------
 
     if metric == "capacity":
-        # A capacity fact should not be inferred from a count of
-        # locations/stores/etc. when no capacity language is attached
-        # to the number.
-        if re.search(
-            r"\b(?:locations?|stores?|facilities|centres?|centers?)\b",
-            lowered,
-        ):
+        explicit_count_units = {
+            "employees", "employee",
+            "customers", "customer",
+            "users", "user",
+            "vehicles", "vehicle",
+            "locations", "location",
+            "stores", "store",
+            "facilities", "facility",
+            "vendors", "vendor",
+            "partners", "partner",
+        }
+
+        if unit_normalized in explicit_count_units:
+            return False
+
+        if throughput_unit:
+            return True
+
+        if unit_normalized in {
+            "kw", "mw", "gw",
+            "kg", "kgs", "g", "grams",
+            "tonne", "tonnes", "ton", "tons",
+        }:
+            return True
+
+        if unit_normalized in magnitude_units:
             if not re.search(
                 r"\b(?:capacity|installed capacity|production capacity|"
-                r"sort capacity|processing capacity)\b",
+                r"processing capacity|sort capacity|rated capacity|"
+                r"sanctioned capacity)\b",
                 lowered,
             ):
                 return False
+
+        if re.search(
+            r"\b(?:locations?|stores?|facilities|centres?|centers?|"
+            r"vehicles?|vendors?|partners?)\b",
+            lowered,
+        ):
+            if re.search(
+                r"\b\d[\d,.]*\s+(?:additional\s+)?"
+                r"(?:locations?|stores?|facilities|centres?|centers?|"
+                r"vehicles?|vendors?|partners?)\b",
+                lowered,
+            ):
+                return False
+
+        if not unit_normalized:
+            if not re.search(r"\b(?:capacity|capacities)\b", lowered):
+                return False
+
+        return True
 
     # ---------------------------------------------------------------
     # GDP
     # ---------------------------------------------------------------
 
     if metric == "gdp":
-        if _looks_like_footnote_or_url_reference(
-            text,
-            max(0, lowered.find("gdp")),
+        if re.search(
+            r"https?://|www\.|\bdoi\b|\bref(?:erence)?\b",
+            lowered,
         ):
             return False
 
+        if re.search(
+            r"\b(?:section|note|page|figure|table)\s+\d+",
+            lowered,
+        ):
+            return False
+
+    # ---------------------------------------------------------------
+    # Basis points sanity
+    # ---------------------------------------------------------------
+
+    if unit_normalized in rate_units:
+        if metric not in {"growth", "inflation"}:
+            if not re.search(
+                r"\b(?:rate|margin|growth|change|increase|decrease)\b",
+                lowered,
+            ):
+                return False
+
     return True
+
 
 
 
