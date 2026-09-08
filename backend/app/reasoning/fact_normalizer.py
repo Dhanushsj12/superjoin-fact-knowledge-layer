@@ -39,12 +39,18 @@ MAGNITUDE_MULTIPLIERS = {
     "mn": 1_000_000,
     "million": 1_000_000,
     "bn": 1_000_000_000,
+    "b": 1_000_000_000,
     "billion": 1_000_000_000,
+    "trillion": 1_000_000_000_000,
+    "cr": 10_000_000,
+    "crore": 10_000_000,
+    "lac": 100_000,
+    "lakh": 100_000,
 }
 
 
 MAGNITUDE_PATTERN = (
-    r"(?:k|thousand|m|mn|million|bn|billion)"
+    r"(?:k|thousand|m|mn|million|bn|b|billion|trillion|cr|crore|lac|lakh)"
 )
 
 
@@ -214,7 +220,7 @@ def _extract_number_mentions(text: str):
 
     pattern = re.compile(
         rf"""
-        (?P<currency>[₹$€£])?
+        (?P<currency>₹|\$|€|£|Rs\.?|INR|US\$|USD|EUR|GBP)?
         \s*
         (?P<number>
             [-+]?
@@ -229,8 +235,9 @@ def _extract_number_mentions(text: str):
             (?P<percent>%)
             |
             (?P<magnitude>
-                k|thousand|m|mn|million|bn|billion
+                k|thousand|m|mn|million|bn|b|billion|trillion|cr|crore|lac|lakh
             )
+            (?![A-Za-z])
         )?
         """,
         re.IGNORECASE | re.VERBOSE,
@@ -391,24 +398,33 @@ def _infer_value_unit(
     evidence_mention,
 ) -> str:
     """
-    Preserve the explicitly extracted unit when present.
+    Infer a comparison-safe unit.
 
-    If the evidence clearly identifies a percentage but the
-    extractor omitted the unit, infer 'percent'.
-
-    Currency symbols are also preserved when the unit is absent.
+    Important:
+    - "$ billion" remains "$ billion" while the numeric value is normalized
+      to base currency units.
+    - "million shipments/day" becomes "shipments/day"; the million multiplier
+      belongs in the numeric value.
+    - Percentages become "percent".
     """
-    existing_unit = normalize_text(fact.get("unit"))
+    existing_unit = str(fact.get("unit") or "").strip()
 
     if existing_unit:
-        return existing_unit
+        currency, magnitude, semantic = _split_unit_components(existing_unit)
+
+        if semantic:
+            return semantic
+
+        if magnitude:
+            return f"{currency} {magnitude}".strip()
+
+        return _normalize_explicit_unit(existing_unit)
 
     if evidence_mention:
         if evidence_mention.get("is_percent"):
             return "percent"
 
         currency = evidence_mention.get("currency")
-
         if currency:
             return currency
 
@@ -419,39 +435,122 @@ def _infer_value_unit(
 # FACT NORMALIZATION
 # ============================================================
 
-def _normalize_explicit_unit(unit: Any) -> str:
-    """Normalize common unit spellings without changing semantic meaning."""
+def _split_unit_components(unit: Any):
+    """
+    Split a unit into:
+      - optional currency symbol
+      - optional magnitude
+      - semantic unit
+
+    Examples:
+        "$ billion"              -> ("$", "billion", "")
+        "₹ million"              -> ("₹", "million", "")
+        "million shipments/day"  -> ("", "million", "shipments/day")
+        "MW"                     -> ("", "", "mw")
+        "bps"                    -> ("", "", "bps")
+    """
     if unit is None:
-        return ""
+        return "", "", ""
 
     value = str(unit).strip().lower()
+    value = re.sub(r"\s+", " ", value)
+
+    currency = ""
+    currency_match = re.match(r"^(₹|rs\.?|inr|us\$|usd|\$|€|eur|£|gbp)\s*", value)
+    if currency_match:
+        token = currency_match.group(1)
+        currency_aliases = {
+            "rs": "₹",
+            "rs.": "₹",
+            "inr": "₹",
+            "us$": "$",
+            "usd": "$",
+            "$": "$",
+            "€": "€",
+            "eur": "€",
+            "£": "£",
+            "gbp": "£",
+            "₹": "₹",
+        }
+        currency = currency_aliases.get(token, token)
+        value = value[currency_match.end():].strip()
+
+    # Magnitude may be followed by a semantic unit, e.g.
+    # "million shipments/day".
+    magnitude_match = re.match(
+        r"^(thousand|mn|million|bn|billion|trillion|crore|cr|lakh|lac|k|m|b)\b\s*",
+        value,
+        re.IGNORECASE,
+    )
+    magnitude = ""
+    if magnitude_match:
+        magnitude = magnitude_match.group(1).lower()
+        value = value[magnitude_match.end():].strip()
+
+    aliases = {
+        "k": "thousand",
+        "m": "million",
+        "mn": "million",
+        "bn": "billion",
+        "b": "billion",
+        "cr": "crore",
+        "lac": "lakh",
+        "pct": "percent",
+        "%": "percent",
+        "percentage": "percent",
+    }
+
+    magnitude = aliases.get(magnitude, magnitude)
+
+    return currency, magnitude, value
+
+
+def _normalize_explicit_unit(unit: Any) -> str:
+    """Normalize units while preserving currency, magnitude, and semantic units."""
+    currency, magnitude, semantic = _split_unit_components(unit)
+
+    if magnitude:
+        # For pure monetary magnitudes, keep currency + magnitude in the
+        # canonical key so the caller can distinguish "$ billion" from "₹ billion".
+        if not semantic:
+            return f"{currency} {magnitude}".strip()
+
+        # For throughput/compound units, magnitude is part of the value
+        # representation and the semantic unit is what should be compared.
+        return semantic
 
     aliases = {
         "percentage": "percent",
         "%": "percent",
         "pct": "percent",
-        "thousand": "thousand",
-        "k": "k",
-        "mn": "million",
-        "m": "million",
-        "million": "million",
-        "bn": "billion",
-        "b": "billion",
-        "billion": "billion",
+        "rs": "₹",
+        "rs.": "₹",
+        "inr": "₹",
+        "us$": "$",
+        "usd": "$",
+        "gbp": "£",
+        "eur": "€",
     }
 
-    return aliases.get(value, value)
+    return aliases.get(semantic, semantic)
 
 
 def _explicit_unit_multiplier(unit: Any) -> float:
-    """Return the multiplier represented by an explicit magnitude unit."""
-    normalized = _normalize_explicit_unit(unit)
+    """Return only a true magnitude multiplier from an explicit unit.
+
+    Important: MW/GW/KW are physical units, not M/G/K magnitude prefixes
+    for this fact schema, so they must never be scaled here.
+    """
+    _, magnitude, _ = _split_unit_components(unit)
+
     return {
-        "k": 1_000.0,
         "thousand": 1_000.0,
         "million": 1_000_000.0,
         "billion": 1_000_000_000.0,
-    }.get(normalized, 1.0)
+        "trillion": 1_000_000_000_000.0,
+        "crore": 10_000_000.0,
+        "lakh": 100_000.0,
+    }.get(magnitude, 1.0)
 
 
 def _value_already_contains_explicit_magnitude(value: Any) -> bool:
@@ -522,9 +621,10 @@ def _apply_explicit_unit(
         if (
             evidence_multiplier == 1.0
             and abs(float(normalized_value) - printed_value) < 1e-6
-            and abs(float(normalized_value)) >= unit_multiplier
         ):
-            return float(normalized_value)
+            # The evidence parser may not have recognized a magnitude such
+            # as "Cr"/"Lac". The explicit fact unit is still authoritative.
+            return float(normalized_value) * unit_multiplier
 
         # If the extracted value is the displayed number and evidence carries
         # a magnitude, apply that evidence magnitude once.
@@ -612,14 +712,30 @@ def normalize_fact(fact: Dict[str, Any]) -> Dict[str, Any]:
         evidence_mention,
     )
 
-    # Canonicalize common magnitude spellings so comparisons are stable.
-    unit_key = _normalize_explicit_unit(unit_key)
+    # Canonicalize the unit AFTER scaling the numeric value.
+    # Magnitudes such as "million" and "billion" describe the value, not
+    # the final comparison dimension. Therefore:
+    #   216 + "$ billion" -> value=216000000000, unit="$"
+    #   3.7 + "million"  -> value=3700000, unit=""
+    #   7.1 + "million shipments/day" -> value=7100000, unit="shipments/day"
+    currency_part, magnitude_part, semantic_part = _split_unit_components(unit_key)
+
+    if magnitude_part:
+        if semantic_part:
+            unit_key = semantic_part
+        else:
+            unit_key = currency_part
+    else:
+        unit_key = _normalize_explicit_unit(unit_key)
 
     return {
         "entity_key": normalize_text(fact.get("entity")),
         "metric_key": normalize_text(fact.get("metric")),
         "value": normalized_value,
         "unit_key": unit_key,
+        # Keep "unit" for existing callers/tests while "unit_key" remains
+        # the canonical comparison field used by the reasoning layer.
+        "unit": unit_key,
         "period_key": normalize_text(fact.get("period")),
         "scope_key": normalize_text(fact.get("scope")),
     }
