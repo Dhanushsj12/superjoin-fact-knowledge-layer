@@ -390,12 +390,75 @@ def _prepare_fact(fact: Dict[str, Any]) -> Dict[str, Any]:
 # BASIC FIELD HELPERS
 # ============================================================
 
+def _infer_period_from_evidence(fact: Dict[str, Any]) -> str:
+    """
+    Infer a reporting period only when the evidence contains
+    a clear, unambiguous period reference.
+
+    This is generic and does not depend on any document name.
+    """
+
+    evidence = _normalize_text(_get_evidence(fact))
+
+    if not evidence:
+        return ""
+
+    # Fiscal years: FY2024, FY24, FY 2024, FY 24
+    fiscal_matches = re.findall(
+        r"\bfy\s*[-/]?\s*(20\d{2}|\d{2})\b",
+        evidence,
+    )
+
+    # Explicit dates such as March 31, 2024
+    date_matches = re.findall(
+        r"\b(?:january|february|march|april|may|june|"
+        r"july|august|september|october|november|december)"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+20\d{2}\b",
+        evidence,
+    )
+
+    # Calendar years when explicitly attached to reporting
+    # language. Avoid treating arbitrary numbers as years.
+    year_matches = re.findall(
+        r"\b(?:in|during|for|as of|ended|year)\s+(20\d{2})\b",
+        evidence,
+    )
+
+    candidates = []
+
+    for match in fiscal_matches:
+        year = match
+        if len(year) == 2:
+            year = "20" + year
+        candidates.append("FY" + year)
+
+    candidates.extend(
+        " ".join(match.split())
+        for match in date_matches
+    )
+
+    candidates.extend(year_matches)
+
+    # Only infer when there is exactly one unique candidate.
+    unique_candidates = list(dict.fromkeys(candidates))
+
+    if len(unique_candidates) == 1:
+        return unique_candidates[0]
+
+    return ""
+
+
 def _get_period(fact: Dict[str, Any]) -> str:
-    return (
+    explicit_period = (
         fact.get("period_key")
         or fact.get("period")
         or ""
     )
+
+    if explicit_period:
+        return str(explicit_period).strip()
+
+    return _infer_period_from_evidence(fact)
 
 
 def _get_scope(fact: Dict[str, Any]) -> str:
@@ -1054,15 +1117,109 @@ def classify_relationship(
         )
 
     # ---------------------------------------------------------
-    # 12. Genuine contradiction.
+    # 12. Require sufficient context before contradiction.
+    # ---------------------------------------------------------
+
+    evidence_a = _get_evidence(prepared_a)
+    evidence_b = _get_evidence(prepared_b)
+
+    def _context_tokens(text: str) -> set:
+        """Extract lightweight semantic tokens from evidence."""
+        text = _normalize_text(text)
+
+        text = re.sub(
+            r"\b\d+(?:\.\d+)?\b",
+            " ",
+            text,
+        )
+
+        stopwords = {
+            "the", "a", "an", "of", "and", "or", "to", "in",
+            "for", "from", "by", "was", "were", "is", "are",
+            "has", "have", "had", "with", "on", "as", "at",
+            "its", "this", "that", "reported", "during", "period",
+        }
+
+        return {
+            token
+            for token in text.split()
+            if token not in stopwords
+            and len(token) > 2
+        }
+
+    tokens_a = _context_tokens(evidence_a)
+    tokens_b = _context_tokens(evidence_b)
+
+    if tokens_a and tokens_b:
+        overlap = len(tokens_a.intersection(tokens_b))
+        union = len(tokens_a.union(tokens_b))
+        evidence_similarity = overlap / union if union else 0.0
+    else:
+        evidence_similarity = 0.0
+
+    # A contradiction is only safe when there is evidence that
+    # both facts describe the same reporting context.
+    period_match = bool(
+        period_a
+        and period_b
+        and period_a == period_b
+    )
+
+    scope_match = bool(
+        scope_a
+        and scope_b
+        and scope_a == scope_b
+    )
+
+    entity_match = bool(
+        entity_a
+        and entity_b
+        and entity_a == entity_b
+    )
+
+    # Extract contextual qualifiers for the final comparability
+    # check. These are derived from evidence, not document names.
+    markers_a = _context_markers(prepared_a)
+    markers_b = _context_markers(prepared_b)
+
+    shared_markers = markers_a.intersection(markers_b)
+    strong_evidence_match = evidence_similarity >= 0.45
+
+    # A shared generic marker such as ``annual`` or ``quarterly``
+    # is not strong enough by itself. It becomes useful only when
+    # the evidence wording also strongly overlaps. This prevents
+    # unrelated facts such as two different ``growth`` values
+    # from being treated as contradictions.
+    has_comparable_context = (
+        period_match
+        or scope_match
+        or entity_match
+        or (bool(shared_markers) and strong_evidence_match)
+    )
+
+    if not has_comparable_context:
+        return _result(
+            "uncertain",
+            (
+                "The facts share the same metric and compatible "
+                "measurement dimension, but do not contain "
+                "sufficient context to establish that the "
+                "different values describe the same quantity."
+            ),
+            normalized_value_a,
+            normalized_value_b,
+        )
+
+    # ---------------------------------------------------------
+    # 13. Genuine contradiction.
     # ---------------------------------------------------------
 
     return _result(
         "contradiction",
         (
             "The facts refer to the same metric, compatible "
-            "measurement dimension, and comparable reporting "
-            "context, but report materially different "
+            "measurement dimension, and sufficiently comparable "
+            "reporting context, but report materially different "
             "normalized values."
         ),
         normalized_value_a,

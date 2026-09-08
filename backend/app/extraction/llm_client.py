@@ -11,13 +11,15 @@ MODEL_NAME = "qwen/qwen3.8-27b"
 
 # Groq is an optional LLM provider.
 #
-# The application must be able to start and use the deterministic
-# fallback extractor even when:
+# The application must remain functional even when:
 #   - the groq package is not installed
 #   - GROQ_API_KEY is not configured
 #   - the Groq API is unavailable
+#   - the Groq API reaches its rate/quota limit
 #
-# This import is therefore intentionally guarded.
+# In these cases, generate_text() raises a controlled RuntimeError.
+# The extraction pipeline catches that failure and uses the
+# deterministic fallback extractor.
 try:
     from groq import Groq
 except ImportError:
@@ -39,43 +41,50 @@ def generate_text(prompt: str) -> str:
     """
     Send a prompt to Groq and return the model response.
 
-    Groq is optional. If the provider is unavailable or not configured,
-    this function raises a controlled RuntimeError. The extraction
-    pipeline is responsible for catching the failure and using the
-    deterministic fallback extractor.
+    Groq is used when it is available and configured.
+    If Groq is unavailable, not configured, or fails during the
+    request, the calling extraction pipeline can fall back to
+    deterministic extraction.
     """
 
     if client is None:
         if Groq is None:
             raise RuntimeError(
                 "Groq provider is not installed. "
-                "Using deterministic fallback extraction."
+                "Falling back to deterministic extraction."
             )
 
         raise RuntimeError(
             "GROQ_API_KEY is not configured. "
-            "Using deterministic fallback extraction."
+            "Falling back to deterministic extraction."
         )
 
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a fact extraction system. "
-                    "Always return valid JSON."
-                ),
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a fact extraction system. "
+                        "Always return valid JSON."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            temperature=0,
+            response_format={
+                "type": "json_object"
             },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ],
-        temperature=0,
-        response_format={
-            "type": "json_object"
-        },
-    )
+        )
 
-    return response.choices[0].message.content
+        return response.choices[0].message.content
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"Groq LLM request failed: {exc}. "
+            "Falling back to deterministic extraction."
+        ) from exc
