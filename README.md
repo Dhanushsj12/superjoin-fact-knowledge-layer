@@ -1,12 +1,12 @@
 # Fact Knowledge Layer
 
-A generic knowledge layer that extracts meaningful numerical and semantic facts from PDF documents, links every fact back to source evidence, normalizes values and context, and identifies relationships between facts across documents.
+A generic knowledge layer that extracts meaningful numerical and semantic facts from PDF documents, links every fact back to its source evidence, normalizes values and context, and identifies relationships between facts across documents.
 
 Built as an engineering assignment for the **Superjoin VIT 2026 Engineering Intern Hiring Challenge**.
 
 ---
 
-## Problem
+## 1. Problem
 
 Organizations often have important facts distributed across multiple PDF documents.
 
@@ -21,7 +21,7 @@ The goal of this project is to build a reusable **Fact Knowledge Layer** that ca
 
 1. Ingest one or more PDFs.
 2. Extract meaningful numerical and semantic facts.
-3. Preserve the exact evidence supporting each fact.
+3. Preserve the evidence supporting each fact.
 4. Normalize values and units where possible.
 5. Compare facts across documents.
 6. Identify:
@@ -36,7 +36,7 @@ The system is designed to work with additional PDFs without requiring document-s
 
 ---
 
-## Architecture
+## 2. Architecture
 
 ```text
                     PDF Documents
@@ -103,7 +103,7 @@ The LLM is **not responsible for the entire system**.
 
 It is treated as an optional semantic extraction component.
 
-The rest of the pipeline—validation, evidence verification, normalization, matching, and relationship reasoning—remains deterministic and independent of the LLM provider.
+The rest of the pipeline — validation, evidence verification, normalization, matching, and relationship reasoning — remains deterministic and independent of the LLM provider.
 
 This makes the system more resilient to:
 
@@ -116,7 +116,7 @@ This makes the system more resilient to:
 
 ---
 
-## Fact Representation
+## 3. Fact Representation
 
 Facts use a generic schema rather than a document-specific schema.
 
@@ -167,7 +167,7 @@ without requiring a separate schema for each document.
 
 ---
 
-## Evidence Linking
+## 4. Evidence Linking
 
 Every extracted fact is linked to its source evidence.
 
@@ -188,11 +188,11 @@ This prevents the extraction layer from returning facts whose supporting evidenc
 
 ---
 
-## Relationship Reasoning
+## 5. Relationship Reasoning
 
 The relationship engine compares facts after normalization and context analysis.
 
-### Corroboration
+### 5.1 Corroboration
 
 When two facts describe the same metric, comparable context, and the same normalized value:
 
@@ -221,7 +221,7 @@ Example result:
 
 ---
 
-### Contradiction
+### 5.2 Contradiction
 
 A contradiction is reported only when the facts have sufficiently compatible context but materially different values.
 
@@ -254,7 +254,7 @@ The engine does not classify every differing number as a contradiction.
 
 ---
 
-### Contextual Difference
+### 5.3 Contextual Difference
 
 Different values can be valid when the surrounding context differs.
 
@@ -295,7 +295,7 @@ The engine is deliberately conservative when context is incomplete.
 
 ---
 
-### Uncertain / Failure Handling
+### 5.4 Uncertain / Failure Handling
 
 If two facts have different values but insufficient context to safely determine whether they contradict each other, the system returns:
 
@@ -330,7 +330,7 @@ This is an intentional design decision.
 
 ---
 
-## Extraction Strategy
+## 6. Extraction Strategy
 
 The extraction pipeline uses two complementary approaches.
 
@@ -383,7 +383,7 @@ the pipeline falls back to deterministic extraction rather than failing the enti
 
 ---
 
-## Batch Processing
+## 7. Batch Processing
 
 Documents are processed in chunks rather than loading an entire PDF into one model request.
 
@@ -401,7 +401,7 @@ If one batch fails, the affected batch can fall back to deterministic extraction
 
 ---
 
-## API
+## 8. API
 
 The backend is implemented using **FastAPI**.
 
@@ -441,7 +441,7 @@ reasoning/
 
 ---
 
-## Frontend
+## 9. Frontend
 
 The frontend is a lightweight HTML/CSS/JavaScript interface.
 
@@ -456,7 +456,7 @@ The frontend intentionally avoids unnecessary framework complexity for this prot
 
 ---
 
-## Running the Project
+## 10. Running the Project
 
 ### Prerequisites
 
@@ -499,7 +499,7 @@ http://127.0.0.1:5500
 
 ---
 
-## Testing
+## 11. Testing
 
 The project includes unit and integration tests covering:
 
@@ -538,7 +538,7 @@ Insufficient context   → uncertain
 
 ---
 
-## Genericity
+## 12. Genericity
 
 The system does not depend on:
 
@@ -555,7 +555,7 @@ The fact representation and reasoning layer remain independent of the source doc
 
 ---
 
-## Design Decisions and Tradeoffs
+## 13. Design Decisions and Tradeoffs
 
 ### Deterministic Fallback Instead of LLM-Only Extraction
 
@@ -597,7 +597,7 @@ The fact representation and reasoning layer remain independent of the source doc
 
 ---
 
-## Failure Handling
+## 14. Failure Handling
 
 The system is designed to degrade gracefully.
 
@@ -617,7 +617,7 @@ The objective is not to force a conclusion for every input, but to produce a tru
 
 ---
 
-## Limitations
+## 15. Limitations
 
 This is a focused engineering prototype rather than a production-scale document intelligence platform.
 
@@ -634,7 +634,7 @@ These limitations are preferable to silently generating unsupported facts.
 
 ---
 
-## Future Improvements
+## 16. Future Improvements
 
 Potential next steps include:
 
@@ -652,7 +652,7 @@ Potential next steps include:
 
 ---
 
-## AI Tools Used
+## 17. AI Tools Used
 
 AI assistance was used during development for:
 
@@ -667,7 +667,7 @@ The system itself does not require an LLM to function because deterministic fall
 
 ---
 
-## Demo
+## 18. Demo
 
 **Demo video:** *Add final demo video link here*
 
@@ -683,7 +683,7 @@ The demo will show:
 
 ---
 
-## Project Structure
+## 19. Project Structure
 
 ```text
 superjoin-fact-knowledge-layer/
@@ -712,7 +712,7 @@ superjoin-fact-knowledge-layer/
 
 ---
 
-## Summary
+## 20. Summary
 
 The project implements a generic fact knowledge layer that combines:
 
