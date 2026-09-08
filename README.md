@@ -10,6 +10,12 @@ Built as an engineering assignment for the **Superjoin VIT 2026 Engineering Inte
 Live Demo:
 https://superjoin-fact-knowledge-ui.onrender.com
 
+## Project Presentation
+
+The complete project presentation covering the problem, architecture, extraction strategy, relationship reasoning, demonstrated cases, engineering trade-offs, limitations, and generalization is available below.
+
+[View the Project Presentation](Superjoin_Fact_Knowledge_Layer_Presentation.pptx)
+
 ---
 
 ## 1. Problem
