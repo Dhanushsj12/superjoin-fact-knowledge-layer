@@ -4,6 +4,12 @@ A generic knowledge layer that extracts meaningful numerical and semantic facts 
 
 Built as an engineering assignment for the **Superjoin VIT 2026 Engineering Intern Hiring Challenge**.
 
+
+**Demo video:** [Watch the 3-minute demo](https://drive.google.com/file/d/160wd9Dgbj_8hFEEx9CQp6COCJW7y4D-V/view?usp=sharing)
+
+Live Demo:
+https://superjoin-fact-knowledge-ui.onrender.com
+
 ---
 
 ## 1. Problem
@@ -777,7 +783,7 @@ The system itself does not require an LLM to function because deterministic fall
 
 ## 18. Demo
 
-**Demo video:** _Add final demo video link here_
+**Demo video:** [Watch the 3-minute demo](https://drive.google.com/file/d/160wd9Dgbj_8hFEEx9CQp6COCJW7y4D-V/view?usp=sharing)
 
 The demo will show:
 
