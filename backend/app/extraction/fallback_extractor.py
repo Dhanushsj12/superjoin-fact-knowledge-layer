@@ -311,6 +311,51 @@ def _looks_like_note_reference(text: str, match: re.Match) -> bool:
     )
 
 
+def _looks_like_date_component(text: str, match: re.Match) -> bool:
+    """Reject numbers that are clearly part of a written date."""
+    before = text[max(0, match.start() - 30):match.start()]
+    after = text[match.end():match.end() + 30]
+
+    month_pattern = (
+        r"(?:January|February|March|April|May|June|July|August|"
+        r"September|October|November|December|Jan|Feb|Mar|Apr|May|"
+        r"Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)"
+    )
+
+    number = re.escape(match.group(0))
+    context = before + match.group(0) + after
+
+    return bool(
+        re.search(
+            rf"\b{month_pattern}\s+{number}\s*,?\s*20\d{{2}}\b",
+            context,
+            re.IGNORECASE,
+        )
+        or re.search(
+            rf"\b{number}\s*,?\s*20\d{{2}}\b",
+            context,
+            re.IGNORECASE,
+        )
+        or re.search(
+            rf"\b(?:as of|as at|ended|year ended|period ended)\s+"
+            rf"{month_pattern}\s+{number}\b",
+            before + match.group(0),
+            re.IGNORECASE,
+        )
+    )
+
+
+def _looks_like_footnote_marker(text: str, match: re.Match) -> bool:
+    """Reject numbers used as parenthesized footnote markers such as (1)."""
+    before = text[max(0, match.start() - 3):match.start()]
+    after = text[match.end():match.end() + 3]
+
+    return bool(
+        re.search(r"\(\s*$", before)
+        and re.match(r"^\s*\)", after)
+    )
+
+
 def _looks_like_heading(text: str) -> bool:
     """Detect likely section headings."""
     stripped = text.strip()
@@ -355,13 +400,138 @@ def _split_sentences(text: str) -> List[str]:
     ]
 
 
+def _looks_like_section_reference(text: str, match_position: int) -> bool:
+    """Reject legal/accounting section numbers such as section 135(5)."""
+    before = text[max(0, match_position - 25):match_position].lower()
+    after = text[match_position:match_position + 12].lower()
+
+    if re.search(r"\bsection\s*$|\bsections\s*$|\bsec\.\s*$", before):
+        if re.match(r"\d+\s*\(", after):
+            return True
+
+    return False
+
+
+def _looks_like_accounting_standard_reference(text: str, match_position: int) -> bool:
+    """Reject accounting-standard references such as Ind AS 109."""
+    before = text[max(0, match_position - 20):match_position].lower()
+
+    return bool(
+        re.search(
+            r"\bind\s+as\s*$|\bindian\s+accounting\s+standard\s*$",
+            before,
+        )
+    )
+
+
+def _looks_like_level_reference(text: str, match_position: int) -> bool:
+    """Reject values that are merely accounting hierarchy levels (Level 1/2/3)."""
+    before = text[max(0, match_position - 12):match_position].lower()
+
+    return bool(re.search(r"\blevel\s*$", before))
+
+
+def _looks_like_footnote_or_url_reference(text: str, match_position: int) -> bool:
+    """Reject numeric fragments that are clearly citation/URL references."""
+    before = text[max(0, match_position - 45):match_position].lower()
+    after = text[match_position:match_position + 45].lower()
+
+    if re.search(r"https?://|www\.", before):
+        return True
+
+    if re.search(r"\bdoi\s*$|\bref(?:erence)?\s*$|\bfootnote\s*$", before):
+        return True
+
+    if re.search(r"\.com/\w*|\.\w{2,6}/\w*", after):
+        return True
+
+    return False
+
+
+def _metric_is_negated_or_contextual(metric: str, sentence: str, position: int) -> bool:
+    """
+    Reject generic keyword matches when the keyword is being used
+    as part of a different concept.
+
+    This remains document-independent.
+    """
+    lowered = sentence.lower()
+
+    if metric == "customers":
+        # "revenue from contract(s) with customers" describes revenue,
+        # not a customer count.
+        if re.search(
+            r"\brevenue\s+from\s+(?:contract|contracts)\s+with\s+customers\b",
+            lowered,
+        ):
+            return True
+
+        # "customers" inside phrases describing revenue/value should not
+        # automatically create a customer-count fact.
+        left = lowered[max(0, position - 80):position]
+        if re.search(
+            r"\b(?:revenue|income|sales|amount|value)\b.{0,45}\bcustomers?\b",
+            left,
+        ):
+            return True
+
+    if metric == "investment":
+        # "investments in scope of Ind AS 109" is a standard/reference,
+        # not an investment amount.
+        if re.search(
+            r"\bind\s+as\s+\d+",
+            lowered,
+        ):
+            return True
+
+        # Maturity/tenure references such as "more than 3 months" are
+        # time information, not investment values.
+        if re.search(
+            r"\b(?:maturity|matures|tenure|period)\b.{0,35}\b\d+\s*"
+            r"(?:days?|months?|years?)\b",
+            lowered,
+        ):
+            return True
+
+    if metric == "assets":
+        # "Level 1/2/3" is an accounting classification, not asset value.
+        if re.search(r"\blevel\s+[123]\b", lowered):
+            return True
+
+    if metric in {"profit", "loss"}:
+        # EPS / loss-per-share text should not become a profit/loss amount.
+        if re.search(
+            r"\b(?:profit|loss)\s+per\s+(?:equity\s+)?share\b",
+            lowered,
+        ):
+            return True
+
+    if metric == "gdp":
+        # GDP references embedded in citations/URLs are not GDP values.
+        if re.search(r"https?://|www\.|imf\.", lowered):
+            return True
+
+    if metric == "direct spend":
+        # The generic word "spends" is too broad when it refers to a
+        # percentage of spending rather than a monetary spend amount.
+        if re.search(
+            r"\b\d+(?:\.\d+)?\s*%\s+of\s+the\s+(?:company'?s\s+)?spend",
+            lowered,
+        ):
+            return True
+
+    return False
+
+
 def _find_metric(sentence: str) -> Optional[Tuple[str, int, int]]:
     """
     Find the best metric in a sentence.
 
-    Important:
-    - Specific multi-word metrics win over generic words.
-    - 'direct spend' is preferred over a later 'growth'.
+    Selection is generic:
+    - specific multi-word phrases are preferred;
+    - contextual false positives are rejected;
+    - among remaining candidates, prefer the strongest phrase;
+    - if several candidates have the same strength, prefer the earliest one.
     """
     lowered = sentence.lower()
 
@@ -369,35 +539,45 @@ def _find_metric(sentence: str) -> Optional[Tuple[str, int, int]]:
 
     for metric, keywords in METRIC_KEYWORDS.items():
         for keyword in keywords:
-            position = lowered.find(keyword.lower())
+            keyword_lower = keyword.lower()
+            position = lowered.find(keyword_lower)
 
-            if position >= 0:
-                candidates.append(
-                    (
-                        len(keyword),
-                        position,
-                        metric,
-                    )
+            if position < 0:
+                continue
+
+            # Avoid matching a keyword in the middle of a larger word.
+            before = lowered[position - 1] if position > 0 else " "
+            after_pos = position + len(keyword_lower)
+            after = lowered[after_pos] if after_pos < len(lowered) else " "
+
+            if before.isalnum() or after.isalnum():
+                continue
+
+            if _metric_is_negated_or_contextual(
+                metric,
+                sentence,
+                position,
+            ):
+                continue
+
+            candidates.append(
+                (
+                    len(keyword),
+                    position,
+                    metric,
+                    keyword,
                 )
+            )
 
     if not candidates:
         return None
 
-    # Prefer longer/more-specific keyword at the same position.
+    # Prefer longer/more-specific keywords, then earlier occurrence.
     candidates.sort(
         key=lambda item: (-item[0], item[1])
     )
 
-    _, position, metric = candidates[0]
-
-    keyword = next(
-        (
-            keyword
-            for keyword in METRIC_KEYWORDS[metric]
-            if lowered.find(keyword.lower()) == position
-        ),
-        metric,
-    )
+    _, position, metric, keyword = candidates[0]
 
     return (
         metric,
@@ -651,6 +831,30 @@ def _extract_plain_number(
         if _looks_like_note_reference(text, match):
             continue
 
+        if _looks_like_date_component(text, match):
+            continue
+
+        if _looks_like_footnote_marker(text, match):
+            continue
+
+        if _looks_like_section_reference(text, match.start()):
+            continue
+
+        if _looks_like_accounting_standard_reference(
+            text,
+            match.start(),
+        ):
+            continue
+
+        if _looks_like_level_reference(text, match.start()):
+            continue
+
+        if _looks_like_footnote_or_url_reference(
+            text,
+            match.start(),
+        ):
+            continue
+
         distance = abs(
             match.start() - metric_position
         )
@@ -728,36 +932,64 @@ def _is_metric_value_compatible(
     """
     Generic semantic compatibility checks.
 
-    These are intentionally broad and document-independent.
+    The fallback should prefer rejecting an ambiguous candidate over
+    manufacturing a misleading fact.
     """
-
     lowered = text.lower()
+    unit_normalized = unit.lower() if isinstance(unit, str) else unit
 
     # Years should almost never become metric values.
     if _is_year(float(value)):
         return False
 
-    # Count metrics should not consume currency values.
+    # ---------------------------------------------------------------
+    # Count metrics
+    # ---------------------------------------------------------------
+
     if metric in COUNT_METRICS:
-        if unit in {"₹", "$", "€", "£"}:
+        # A percentage is not a customer/employee count.
+        if unit_normalized in {"%", "percent", "percentage"}:
             return False
 
+        # Count metrics should not consume currency values.
+        if unit_normalized in {"₹", "$", "€", "£"}:
+            return False
+
+        # Time/weight/distance units are not counts.
+        if unit_normalized in {
+            "tonne",
+            "tonnes",
+            "ton",
+            "tons",
+            "kg",
+            "g",
+            "km",
+            "mile",
+            "miles",
+            "hour",
+            "hours",
+            "day",
+            "days",
+            "month",
+            "months",
+            "year",
+            "years",
+        }:
+            return False
+
+        # Monetary language near a count metric is suspicious unless the
+        # sentence explicitly establishes a count concept.
         monetary_words = [
-            "million",
-            "billion",
-            "crore",
-            "lakh",
-            "rs.",
-            "inr",
             "revenue",
             "salary",
             "remuneration",
             "payment",
             "expense",
+            "spend",
+            "spending",
         ]
 
         if any(word in lowered for word in monetary_words):
-            # Allow if the text explicitly describes a count.
             count_words = [
                 "employees",
                 "employee count",
@@ -766,27 +998,78 @@ def _is_metric_value_compatible(
                 "customers",
                 "customer base",
                 "users",
+                "user base",
+                "number of customers",
+                "number of employees",
             ]
 
             if not any(word in lowered for word in count_words):
                 return False
 
-    # Growth/inflation/market share should normally be percentages/rates.
+    # ---------------------------------------------------------------
+    # Percentage metrics
+    # ---------------------------------------------------------------
+
     if metric in PERCENT_METRICS:
-        if unit != "%":
+        if unit_normalized != "%":
             if not re.search(
                 r"\b(percent|percentage|rate)\b|%",
                 lowered,
             ):
                 return False
 
-    # Monetary metrics should have monetary context.
+    # ---------------------------------------------------------------
+    # Monetary metrics
+    # ---------------------------------------------------------------
+
     if metric in MONETARY_METRICS:
-        monetary_unit = unit in {
+        # Monetary metrics should not consume percentages.
+        if unit_normalized in {"%", "percent", "percentage"}:
+            return False
+
+        # Monetary metrics should not consume durations, weights, etc.
+        if unit_normalized in {
+            "tonne",
+            "tonnes",
+            "ton",
+            "tons",
+            "kg",
+            "g",
+            "km",
+            "mile",
+            "miles",
+            "hour",
+            "hours",
+            "day",
+            "days",
+            "month",
+            "months",
+            "year",
+            "years",
+        }:
+            return False
+
+        monetary_unit = unit_normalized in {
             "₹",
             "$",
             "€",
             "£",
+        }
+
+        magnitude_unit = unit_normalized in {
+            "k",
+            "thousand",
+            "m",
+            "mn",
+            "million",
+            "bn",
+            "billion",
+            "crore",
+            "crores",
+            "lakh",
+            "lakhs",
+            "b",
+            "t",
         }
 
         monetary_words = [
@@ -803,22 +1086,50 @@ def _is_metric_value_compatible(
             "cost",
             "value",
             "amount",
-            "million",
-            "billion",
-            "crore",
-            "lakh",
             "usd",
             "inr",
             "rs.",
         ]
 
-        if not monetary_unit and not any(
-            word in lowered
-            for word in monetary_words
+        if not (
+            monetary_unit
+            or magnitude_unit
+            or any(word in lowered for word in monetary_words)
+        ):
+            return False
+
+    # ---------------------------------------------------------------
+    # Capacity
+    # ---------------------------------------------------------------
+
+    if metric == "capacity":
+        # A capacity fact should not be inferred from a count of
+        # locations/stores/etc. when no capacity language is attached
+        # to the number.
+        if re.search(
+            r"\b(?:locations?|stores?|facilities|centres?|centers?)\b",
+            lowered,
+        ):
+            if not re.search(
+                r"\b(?:capacity|installed capacity|production capacity|"
+                r"sort capacity|processing capacity)\b",
+                lowered,
+            ):
+                return False
+
+    # ---------------------------------------------------------------
+    # GDP
+    # ---------------------------------------------------------------
+
+    if metric == "gdp":
+        if _looks_like_footnote_or_url_reference(
+            text,
+            max(0, lowered.find("gdp")),
         ):
             return False
 
     return True
+
 
 
 # ---------------------------------------------------------------------------
