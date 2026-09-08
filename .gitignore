@@ -17,3 +17,15 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+# Local validation / development artifacts
+backend/relationship_engine_backup.py
+backend/validate_fallback_6pdf.py
+backend/validate_fallback_6pdfs.py
+candidate_validation.txt
+compatibility_context.txt
+compatibility_function.txt
+extractor_core.txt
+fallback_6pdf_output.txt
+fallback_6pdf_summary.txt
+data/validation-6-pdfs/
+screenshots/
