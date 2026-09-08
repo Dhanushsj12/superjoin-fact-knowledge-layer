@@ -257,7 +257,7 @@ def test_billion_and_million_can_be_reconciled():
     assert result["relationship"] == "corroboration"
 
 
-def test_different_unreconcilable_units_are_contextual_difference():
+def test_different_unreconcilable_units_are_incomparable():
     fact_a = {
         "entity_key": "company a",
         "metric_key": "revenue",
@@ -278,4 +278,4 @@ def test_different_unreconcilable_units_are_contextual_difference():
 
     result = classify_relationship(fact_a, fact_b)
 
-    assert result["relationship"] == "contextual_difference"
+    assert result["relationship"] == "incomparable"
