@@ -36,7 +36,7 @@ PERCENT_RE = re.compile(
 )
 
 PERCENT_WORD_RE = re.compile(
-    rf"({NUMBER_PATTERN})\s*(?:percent|percentage)",
+    rf"({NUMBER_PATTERN})\s*(?:percent|percentage|per\s+cent)",
     re.VERBOSE | re.IGNORECASE,
 )
 
@@ -138,7 +138,15 @@ METRIC_KEYWORDS = {
         "growth rate",
         "growth of",
         "grew by",
+        "grew",
+        "grewby",
         "grown by",
+        "grown",
+        "grownby",
+        "increasedby",
+        "decreasedby",
+        "roseby",
+        "fellby",
         "growth percentage",
         "growth %",
     ],
@@ -449,141 +457,459 @@ def _looks_like_footnote_or_url_reference(text: str, match_position: int) -> boo
     return False
 
 
-def _metric_is_negated_or_contextual(metric: str, sentence: str, position: int) -> bool:
+def _metric_is_negated_or_contextual(
+    metric: str,
+    sentence: str,
+    position: int,
+) -> bool:
     """
     Reject generic keyword matches when the keyword is being used
-    as part of a different concept.
+    as a reference, formula label, footnote label, denominator,
+    date/year component, or a different semantic concept.
 
-    This remains document-independent.
+    This logic is document-independent and intentionally conservative:
+    when the relationship between a metric and number is ambiguous,
+    prefer not creating a misleading fact.
     """
     lowered = sentence.lower()
 
-    if metric == "customers":
-        # "revenue from contract(s) with customers" describes revenue,
-        # not a customer count.
-        if re.search(
-            r"\brevenue\s+from\s+(?:contract|contracts)\s+with\s+customers\b",
-            lowered,
+    # PDF extraction can remove spaces between common words.
+    contextual_text = re.sub(
+        r"\b(grew|grown|increased|decreased|rose|fell)(by)\b",
+        r"\1 \2",
+        lowered,
+    )
+    contextual_text = re.sub(
+        r"\b(revenue|income|debt|investment|foreign|capital)"
+        r"(from|of|for|under)\b",
+        r"\1 \2",
+        contextual_text,
+    )
+    contextual_text = re.sub(
+        r"\b(compensation|number|total|government|general)"
+        r"(of|from|with)\b",
+        r"\1 \2",
+        contextual_text,
+    )
+    contextual_text = re.sub(
+        r"\b(debt|debtservice|employees|employee|investment)"
+        r"(service|count|income)\b",
+        r"\1 \2",
+        contextual_text,
+    )
+
+    keyword_end = position + len(metric)
+    tail = contextual_text[keyword_end:]
+    before = contextual_text[:position].rstrip()
+
+    # 1. Direct footnote/reference labels.
+    if re.match(
+        r"\s*(?:\(\s*\d+(?:\s*[,;]\s*\d+)*\s*\)"
+        r"|\[\s*\d+(?:\s*[,;]\s*\d+)*\s*\])",
+        tail,
+    ):
+        return True
+
+    metric_tail = contextual_text[keyword_end:keyword_end + 100]
+    if re.match(
+        r"\s+(?:from|of|for|under)\b[^\n]{0,75}"
+        r"(?:\(\s*\d+(?:\s*[,;]\s*\d+)*\s*\)"
+        r"|\[\s*\d+(?:\s*[,;]\s*\d+)*\s*\])",
+        metric_tail,
+    ):
+        return True
+
+    # 2. Formula / ratio references.
+    after = contextual_text[keyword_end:].lstrip()
+
+    if before.endswith(("/", "÷")) or after.startswith(("/", "÷")):
+        return True
+
+    if "/" in contextual_text or "÷" in contextual_text:
+        nearby = contextual_text[max(0, position - 100):keyword_end + 120]
+        if not re.search(
+            r"(?:₹|\$|€|£|%|\b\d[\d,.]*\s*"
+            r"(?:k|thousand|million|mn|billion|bn|crore|cr|"
+            r"lakh|lac|tonnes?|tons?|kg|km|mw|gw|kw)\b)",
+            nearby,
         ):
             return True
 
-        # "customers" inside phrases describing revenue/value should not
-        # automatically create a customer-count fact.
-        left = lowered[max(0, position - 80):position]
+    # 3. Fiscal/calendar year fragments.
+    context_before = contextual_text[max(0, position - 30):position]
+    context_after = contextual_text[keyword_end:keyword_end + 30]
+
+    if re.search(
+        r"\b(?:fy\s*)?20\d{2}\s*[-–/]\s*\d{1,2}\s*$",
+        context_before,
+    ):
+        return True
+
+    if re.match(r"\s*[-–/]\s*\d{1,2}\b", context_after):
+        return True
+
+    # 4. Numbered section/table/footnote references.
+    # Covers both normal and PDF-collapsed whitespace.
+    reference_metric_words = (
+        r"revenue|revenues|income|profit|loss|assets?|"
+        r"debt|borrowings?|investment|investments|"
+        r"employees?|customers?|gdp|exports?|imports?"
+    )
+
+    if re.match(
+        rf"^\s*\d+(?:\.\d+)?\s*(?:{reference_metric_words})\b",
+        contextual_text,
+    ):
+        return True
+
+    if re.match(
+        rf"^\s*\d+(?:\.\d+)?(?:{reference_metric_words})\b",
+        contextual_text,
+    ):
+        return True
+
+    if re.search(r"\b\d+\s*/\s*$", contextual_text):
+        return True
+
+    if re.search(
+        rf"\b(?:{reference_metric_words})\s*\d+\s*/\s*$",
+        contextual_text,
+    ):
+        return True
+
+    if re.search(
+        r"\b(?:see|refer to|section|sections|table|tables|"
+        r"figure|fig\.?|appendix|annex|paragraph|para\.?|"
+        r"volume|vol\.?|pp?\.?)"
+        r"[^\d]{0,40}(?:¶\s*)?\d+\b",
+        contextual_text,
+    ):
+        return True
+
+    if re.search(
+        r"\bsee\s+¶?\s*\d+\b",
+        contextual_text,
+    ):
+        return True
+
+    # 5. Page/citation references.
+    if re.search(
+        r"\b(?:page|pages|pp\.?|volume|vol\.?)\s*\d+\b",
+        contextual_text,
+    ):
+        return True
+
+    # 6. Percentage used as denominator.
+    # Example: "deficit was 3.3 percent of GDP".
+    if metric == "gdp":
         if re.search(
-            r"\b(?:revenue|income|sales|amount|value)\b.{0,45}\bcustomers?\b",
+            r"\b\d+(?:\.\d+)?\s*"
+            r"(?:%|percent|percentage|per\s+cent)\s+"
+            r"(?:of|as\s+a\s+share\s+of)\s+gdp\b",
+            contextual_text,
+        ):
+            return True
+
+    # 7. Export/import percentages belonging to tariffs, duties,
+    # coverage, or shares rather than the amount of exports/imports.
+    if metric in {"exports", "imports"}:
+        if re.search(
+            r"\b(?:tariff|tariffs|duty|duties|tax|taxes)\b"
+            r".{0,60}\b\d+(?:\.\d+)?\s*"
+            r"(?:%|percent|percentage|per\s+cent)\b",
+            contextual_text,
+        ):
+            return True
+
+        if re.search(
+            r"\b\d+(?:\.\d+)?\s*"
+            r"(?:%|percent|percentage|per\s+cent)\b"
+            r".{0,40}\b(?:tariff|tariffs|duty|duties|tax|taxes)\b",
+            contextual_text,
+        ):
+            return True
+
+        if re.search(
+            r"\b(?:share|coverage|accounting\s+for)\b"
+            r".{0,60}\b\d+(?:\.\d+)?\s*"
+            r"(?:%|percent|percentage|per\s+cent)\b",
+            contextual_text,
+        ):
+            return True
+
+        if re.search(
+            r"\b\d+(?:\.\d+)?\s*"
+            r"(?:%|percent|percentage|per\s+cent)\b"
+            r".{0,60}\b(?:share|coverage|accounting\s+for)\b",
+            contextual_text,
+        ):
+            return True
+
+    # 8. Capacity percentages used for share/utilisation context.
+    if metric == "capacity":
+        if re.search(
+            r"\b(?:share|portion|percentage|proportion)\b"
+            r".{0,80}\bcapacity\b",
+            contextual_text,
+        ):
+            return True
+
+        if re.search(
+            r"\bcapacity\b.{0,80}"
+            r"\b(?:share|portion|percentage|proportion|utili[sz]ation)\b",
+            contextual_text,
+        ):
+            return True
+
+        if re.search(
+            r"\binstalled\s+electricity\s+capacity\b"
+            r".{0,80}\b(?:%|percent|percentage|per\s+cent)\b",
+            contextual_text,
+        ):
+            return True
+
+    # 9. Basis points are rates, not monetary amounts.
+    if metric in {
+        "revenue",
+        "profit",
+        "loss",
+        "assets",
+        "debt",
+        "investment",
+        "direct spend",
+    }:
+        if re.search(
+            r"\b\d+(?:\.\d+)?\s*bps?\b",
+            contextual_text,
+        ):
+            return True
+
+    # 10. Employees used in rates, ESOPs, grants, or options.
+    if metric == "employees":
+        if re.search(
+            r"\b(?:injury|incident|turnover|attrition|rate)\b",
+            contextual_text,
+        ):
+            return True
+
+        if re.search(
+            r"\b(?:per\s+(?:thousand|1000)|per\s+employee)\b",
+            contextual_text,
+        ):
+            return True
+
+        if re.search(
+            r"\b(?:esop|stock\s+option|options?|grant|grants)\b"
+            r".{0,100}\bemployees?\b",
+            contextual_text,
+        ):
+            return True
+
+        if re.search(
+            r"\bemployees?\b.{0,100}"
+            r"\b(?:esop|stock\s+option|options?|grant|grants)\b",
+            contextual_text,
+        ):
+            return True
+
+    # 11. Customers used inside accounting/revenue terminology.
+    if metric == "customers":
+        if re.search(
+            r"\brevenue\s+from\s+(?:contract|contracts)\s+with\s+customers\b",
+            contextual_text,
+        ):
+            return True
+
+        left = contextual_text[max(0, position - 80):position]
+        if re.search(
+            r"\b(?:revenue|income|sales|amount|value)\b"
+            r".{0,45}\bcustomers?\b",
             left,
         ):
             return True
 
+        if re.search(
+            r"\btop\s+\d+\s+customers?\b",
+            contextual_text,
+        ):
+            return True
+
+    # 12. Investment numbers that are actually dates/durations.
     if metric == "investment":
-        # "investments in scope of Ind AS 109" is a standard/reference,
-        # not an investment amount.
         if re.search(
-            r"\bind\s+as\s+\d+",
-            lowered,
+            r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)"
+            r"[a-z]*\s*[‘'’]?\s*\d{2,4}\b",
+            contextual_text,
         ):
             return True
 
-        # Maturity/tenure references such as "more than 3 months" are
-        # time information, not investment values.
         if re.search(
-            r"\b(?:maturity|matures|tenure|period)\b.{0,35}\b\d+\s*"
-            r"(?:days?|months?|years?)\b",
-            lowered,
+            r"\b(?:maturity|matures|tenure|period)\b.{0,35}"
+            r"\b\d+\s*(?:days?|months?|years?)\b",
+            contextual_text,
         ):
             return True
 
+    # 13. Assets used as hierarchy references.
     if metric == "assets":
-        # "Level 1/2/3" is an accounting classification, not asset value.
-        if re.search(r"\blevel\s+[123]\b", lowered):
+        if re.search(r"\blevel\s+[123]\b", contextual_text):
             return True
 
+    # 14. Profit/loss per-share references.
     if metric in {"profit", "loss"}:
-        # EPS / loss-per-share text should not become a profit/loss amount.
         if re.search(
             r"\b(?:profit|loss)\s+per\s+(?:equity\s+)?share\b",
-            lowered,
+            contextual_text,
         ):
             return True
 
-    if metric == "gdp":
-        # GDP references embedded in citations/URLs are not GDP values.
-        if re.search(r"https?://|www\.|imf\.", lowered):
+    # 15. Losses used in accounting/IFRS terminology.
+    if metric == "loss":
+        if re.search(
+            r"\b(?:losses|loss)\b.{0,60}"
+            r"\b(?:ifrs[- ]?9|expected\s+credit|impairment)\b",
+            contextual_text,
+        ):
             return True
 
-    if metric == "direct spend":
-        # The generic word "spends" is too broad when it refers to a
-        # percentage of spending rather than a monetary spend amount.
+    # 16. Production used as process/function terminology.
+    if metric == "production":
         if re.search(
-            r"\b\d+(?:\.\d+)?\s*%\s+of\s+the\s+(?:company'?s\s+)?spend",
-            lowered,
+            r"\bproduction\s+(?:process|processes|function|functions|"
+            r"method|methods|system|systems)\b",
+            contextual_text,
+        ):
+            return True
+
+    # 17. Growth percentage should not become market share merely
+    # because "market share" appears later in the same sentence.
+    if metric == "market share":
+        if re.search(
+            r"\b\d+(?:\.\d+)?\s*\+?\s*"
+            r"(?:%|percent|percentage|per\s+cent)\s*"
+            r"(?:yoy|year[- ]on[- ]year)?\s*growth\b",
+            contextual_text,
+        ):
+            return True
+
+    # 18. GDP web/citation references.
+    if metric == "gdp":
+        if re.search(r"https?://|www\.|imf\.", contextual_text):
+            return True
+
+    # 19. Direct-spend percentage-of-spend references.
+    if metric == "direct spend":
+        if re.search(
+            r"\b\d+(?:\.\d+)?\s*%\s+of\s+the\s+"
+            r"(?:company'?s\s+)?spend",
+            contextual_text,
         ):
             return True
 
     return False
 
-
 def _find_metric(sentence: str) -> Optional[Tuple[str, int, int]]:
     """
     Find the best metric in a sentence.
 
-    Selection is generic:
-    - specific multi-word phrases are preferred;
-    - contextual false positives are rejected;
-    - among remaining candidates, prefer the strongest phrase;
-    - if several candidates have the same strength, prefer the earliest one.
+    The fallback is intentionally conservative.  It first removes
+    contextual false positives, then prefers the metric that is closest
+    to the numeric value.  This matters for sentences such as
+    ``Revenue grew by 30% YoY`` where ``revenue`` is a noun in the
+    sentence but ``growth`` is the actual measured quantity.
     """
     lowered = sentence.lower()
+
+    # PDF extraction often collapses words around verbs.  Normalize only
+    # for candidate detection; the original sentence remains the evidence.
+    normalized = re.sub(
+        r"(?i)\b(grew|grown|increased|decreased|rose|fell)by\b",
+        r"\1 by",
+        lowered,
+    )
+    normalized = re.sub(
+        r"(?i)\b(compensation)of\b",
+        r"\1 of",
+        normalized,
+    )
+    normalized = re.sub(
+        r"(?i)\b(debt)service\b",
+        r"\1 service",
+        normalized,
+    )
+
+    # Numeric anchors used to score metric/value proximity.
+    numeric_positions = [
+        match.start()
+        for match in re.finditer(
+            r"(?:₹|\$|€|£)?\s*\d[\d,]*(?:\.\d+)?\s*(?:%|percent|per cent|million|mn|billion|bn|crore|lakh|tons?|tonnes?|mw|gw|kw|bps)?",
+            normalized,
+        )
+    ]
 
     candidates = []
 
     for metric, keywords in METRIC_KEYWORDS.items():
         for keyword in keywords:
             keyword_lower = keyword.lower()
-            position = lowered.find(keyword_lower)
+            position = normalized.find(keyword_lower)
 
             if position < 0:
                 continue
 
-            # Avoid matching a keyword in the middle of a larger word.
-            before = lowered[position - 1] if position > 0 else " "
+            before = normalized[position - 1] if position > 0 else " "
             after_pos = position + len(keyword_lower)
-            after = lowered[after_pos] if after_pos < len(lowered) else " "
+            after = normalized[after_pos] if after_pos < len(normalized) else " "
 
             if before.isalnum() or after.isalnum():
                 continue
 
+            # Use the corresponding position in the original text when
+            # normalization did not change anything before this candidate.
+            original_position = lowered.find(keyword_lower)
+            if original_position < 0:
+                original_position = position
+
             if _metric_is_negated_or_contextual(
                 metric,
                 sentence,
-                position,
+                original_position,
             ):
                 continue
 
+            if numeric_positions:
+                distance = min(
+                    abs(position - number_position)
+                    for number_position in numeric_positions
+                )
+            else:
+                distance = 10**6
+
             candidates.append(
                 (
-                    len(keyword),
+                    distance,
+                    -len(keyword),
                     position,
                     metric,
                     keyword,
+                    original_position,
                 )
             )
 
     if not candidates:
         return None
 
-    # Prefer longer/more-specific keywords, then earlier occurrence.
-    candidates.sort(
-        key=lambda item: (-item[0], item[1])
-    )
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
 
-    _, position, metric, keyword = candidates[0]
+    _, _, _, metric, keyword, original_position = candidates[0]
 
+    # For collapsed PDF spellings such as ``grewby``, return the original
+    # position and original keyword length so downstream extraction still
+    # works against the evidence text.
     return (
         metric,
-        position,
-        position + len(keyword),
+        original_position,
+        original_position + len(keyword),
     )
 
 
@@ -856,6 +1182,26 @@ def _extract_plain_number(
             match.start(),
         ):
             continue
+
+        # A number followed by a slash at the end of a fragment is a
+        # common PDF footnote/table-reference artifact, e.g.
+        # ``General government debt 4/``.  It is not a measured value.
+        if re.search(r"/\s*$", text[match.start():]):
+            continue
+
+        # Reject leading row/section labels such as ``1 Foreign
+        # Investment, Net`` and ``6 Rupee DebtService``.  If the first
+        # numeric token appears before the metric and there is no later
+        # numeric value, the number is acting as a label rather than the
+        # metric value.  This is intentionally generic and does not depend
+        # on any document-specific wording.
+        if match.start() <= len(text) - len(text.lstrip()) + 1:
+            after_number = text[match.end():]
+            if metric_position > match.start() and not re.search(
+                r"(?:₹|\$|€|£)?\s*\d[\d,]*(?:\.\d+)?",
+                after_number,
+            ):
+                continue
 
         distance = abs(
             match.start() - metric_position
@@ -1331,6 +1677,32 @@ def _extract_table_row_fact(
 # Main fallback extractor
 # ---------------------------------------------------------------------------
 
+
+def _looks_like_non_fact_fragment(text: str) -> bool:
+    """
+    Reject short PDF/table fragments that are clearly references or labels,
+    before table-row extraction can interpret their numbers as values.
+    """
+    normalized = text.lower()
+    normalized = re.sub(r"\bcompensationof\b", "compensation of", normalized)
+    normalized = re.sub(r"\bdebtservice\b", "debt service", normalized)
+
+    # Trailing slash markers such as "General government debt 4/" and
+    # "Compensation of employees 5/" are footnote/table references.
+    if re.search(r"\b\d+\s*/\s*$", normalized):
+        return True
+
+    # Leading numeric row labels such as "1 Foreign Investment, Net" or
+    # "6 Rupee Debt Service" are not measurements when no value follows.
+    if re.match(
+        r"^\s*\d+(?:\.\d+)?\s+"
+        r"(?:foreign\s+)?(?:investment|investments|rupee\s+debt\s+service)\b",
+        normalized,
+    ):
+        return True
+
+    return False
+
 def extract_facts_fallback(
     chunks: List[Dict],
 ) -> List[Dict]:
@@ -1380,6 +1752,11 @@ def extract_facts_fallback(
                 continue
 
             if _looks_like_heading(fragment):
+                continue
+
+            # Reject obvious PDF reference/row-label fragments before
+            # table extraction can turn their labels into false facts.
+            if _looks_like_non_fact_fragment(fragment):
                 continue
 
             # -----------------------------------------------------------

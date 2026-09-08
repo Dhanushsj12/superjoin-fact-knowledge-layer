@@ -1,4 +1,5 @@
 from typing import Dict, Any
+import re
 
 from app.reasoning.fact_matcher import facts_match
 from app.reasoning.fact_normalizer import normalize_fact, normalize_number
@@ -9,13 +10,11 @@ from app.reasoning.fact_normalizer import normalize_fact, normalize_number
 # ============================================================
 
 UNIT_ALIASES = {
-    # Percentage
     "%": "%",
     "percent": "%",
     "percentage": "%",
     "pct": "%",
 
-    # Magnitude-only units
     "k": "k",
     "thousand": "k",
 
@@ -31,14 +30,12 @@ UNIT_ALIASES = {
     "t": "tn",
     "trillion": "tn",
 
-    # Indian magnitude units
     "lakh": "lakh",
     "lakhs": "lakh",
 
     "crore": "crore",
     "crores": "crore",
 
-    # Currency
     "$": "$",
     "usd": "$",
     "us$": "$",
@@ -54,7 +51,6 @@ UNIT_ALIASES = {
     "£": "£",
     "gbp": "£",
 
-    # Weight
     "g": "g",
     "gram": "g",
     "grams": "g",
@@ -68,7 +64,6 @@ UNIT_ALIASES = {
     "tonne": "ton",
     "tonnes": "ton",
 
-    # Distance
     "km": "km",
     "kilometer": "km",
     "kilometers": "km",
@@ -78,7 +73,6 @@ UNIT_ALIASES = {
     "mile": "mile",
     "miles": "mile",
 
-    # Time
     "second": "second",
     "seconds": "second",
 
@@ -97,7 +91,6 @@ UNIT_ALIASES = {
     "year": "year",
     "years": "year",
 
-    # Power
     "kw": "kw",
     "kilowatt": "kw",
     "kilowatts": "kw",
@@ -110,13 +103,12 @@ UNIT_ALIASES = {
     "gigawatt": "gw",
     "gigawatts": "gw",
 
-    # Basis points
     "bps": "bps",
+    "basis point": "bps",
     "basis points": "bps",
 }
 
 
-# Magnitude units are scales rather than measurement dimensions.
 MAGNITUDE_UNITS = {
     "k",
     "m",
@@ -126,8 +118,6 @@ MAGNITUDE_UNITS = {
     "crore",
 }
 
-
-# Currency dimensions.
 CURRENCY_UNITS = {
     "$",
     "₹",
@@ -135,14 +125,10 @@ CURRENCY_UNITS = {
     "£",
 }
 
-
-# Percentage dimensions.
 PERCENT_UNITS = {
     "%",
 }
 
-
-# Physical dimensions.
 WEIGHT_UNITS = {
     "g",
     "kg",
@@ -181,16 +167,6 @@ RATE_UNITS = {
 def normalize_unit(unit: Any) -> str:
     """
     Convert common unit spellings into a canonical representation.
-
-    Examples
-    --------
-    million -> m
-    billion -> bn
-    percentage -> %
-    USD -> $
-    INR -> ₹
-    tonnes -> ton
-    megawatts -> mw
     """
 
     if unit is None:
@@ -201,11 +177,9 @@ def normalize_unit(unit: Any) -> str:
     if not value:
         return ""
 
-    # Exact alias first.
     if value in UNIT_ALIASES:
         return UNIT_ALIASES[value]
 
-    # Normalize spaces.
     value = " ".join(value.split())
 
     if value in UNIT_ALIASES:
@@ -222,24 +196,15 @@ def _unit_dimension(unit: Any) -> str:
     """
     Determine the semantic measurement dimension of a unit.
 
-    This is intentionally generic.
-
-    Examples
-    --------
-    "$"               -> currency
-    "₹"               -> currency
-    "%"               -> percentage
-    "million"         -> magnitude
-    "bn"              -> magnitude
-    "tonnes"          -> weight
-    "MW"              -> power
-    "shipments/day"   -> throughput
-    "bags/day"        -> throughput
-    "vehicles"        -> count
-    ""                -> unknown
-
-    The function does NOT attempt currency conversion or physical
-    unit conversion.
+    Examples:
+        "$"             -> currency
+        "%"             -> percentage
+        "million"       -> magnitude
+        "tonnes"        -> weight
+        "MW"            -> power
+        "shipments/day" -> throughput
+        "employees"     -> count
+        ""              -> unknown
     """
 
     normalized = normalize_unit(unit)
@@ -271,9 +236,9 @@ def _unit_dimension(unit: Any) -> str:
     if normalized in RATE_UNITS:
         return "rate"
 
-    # Generic throughput/rate units.
     lowered = normalized.lower()
 
+    # Generic throughput / rate units.
     if "/" in lowered:
         if any(
             token in lowered
@@ -288,7 +253,7 @@ def _unit_dimension(unit: Any) -> str:
         ):
             return "throughput"
 
-    # Common count-like dimensions.
+    # Generic count-like dimensions.
     if lowered in {
         "count",
         "counts",
@@ -308,6 +273,10 @@ def _unit_dimension(unit: Any) -> str:
         "facilities",
         "vendor",
         "vendors",
+        "shipments",
+        "orders",
+        "accounts",
+        "branches",
     }:
         return "count"
 
@@ -325,30 +294,7 @@ def units_are_compatible(
     """
     Determine whether two units represent comparable dimensions.
 
-    Important distinction:
-
-        million vs billion
-            -> compatible
-
-        % vs percentage
-            -> compatible
-
-        $ vs $
-            -> compatible
-
-        ₹ vs $
-            -> NOT compatible
-
-        % vs employees
-            -> NOT compatible
-
-        MW vs shipments/day
-            -> NOT compatible
-
-        tonnes vs customers
-            -> NOT compatible
-
-    Missing units are handled conservatively.
+    Missing units are intentionally conservative.
     """
 
     normalized_a = normalize_unit(unit_a)
@@ -358,41 +304,25 @@ def units_are_compatible(
     if not normalized_a and not normalized_b:
         return True
 
-    # One unit is known and the other is missing.
-    #
-    # We cannot safely prove comparability, so return False.
-    #
-    # This prevents false contradictions such as:
-    #
-    #   revenue = $1 billion
-    #   revenue = 1000
-    #
-    # from automatically being treated as equivalent.
+    # One known and one missing cannot safely be compared.
     if not normalized_a or not normalized_b:
         return False
 
-    # Exactly equal units.
+    # Exact match.
     if normalized_a == normalized_b:
         return True
 
     dimension_a = _unit_dimension(normalized_a)
     dimension_b = _unit_dimension(normalized_b)
 
-    # Magnitude units are interchangeable because the numerical
-    # value is normalized to its base representation elsewhere.
+    # Magnitude scales are compatible because values are normalized.
     if (
         dimension_a == "magnitude"
         and dimension_b == "magnitude"
     ):
         return True
 
-    # Magnitude + untyped number can be comparable.
-    #
-    # Example:
-    #   1 billion
-    #   1000000000
-    #
-    # The normalizer will convert the first to the base number.
+    # Magnitude + untyped numeric value.
     if (
         dimension_a == "magnitude"
         and dimension_b == "unknown"
@@ -421,13 +351,7 @@ def units_are_compatible(
 
 def normalize_value(value: Any) -> Any:
     """
-    Normalize a numeric value using the shared fact normalizer.
-
-    Examples
-    --------
-    1000 million -> 1,000,000,000
-    1 billion    -> 1,000,000,000
-    12.68%       -> 12.68
+    Normalize a numerical value using the shared fact normalizer.
     """
 
     if value is None:
@@ -442,22 +366,7 @@ def normalize_value(value: Any) -> Any:
 
 def _prepare_fact(fact: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Ensure the fact is in normalized form.
-
-    The pipeline normally passes normalized facts.
-
-    However, tests and other callers may pass raw facts such as:
-
-        {
-            "entity": "company a",
-            "metric": "revenue",
-            "value": 1,
-            "unit": "billion"
-        }
-
-    In that situation, normalize_fact() is applied here.
-
-    If the fact already contains the normalized keys, it is reused.
+    Ensure the fact is normalized.
     """
 
     if not isinstance(fact, dict):
@@ -478,14 +387,10 @@ def _prepare_fact(fact: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ============================================================
-# PERIOD / SCOPE HELPERS
+# BASIC FIELD HELPERS
 # ============================================================
 
 def _get_period(fact: Dict[str, Any]) -> str:
-    """
-    Get normalized period from either raw or normalized fact.
-    """
-
     return (
         fact.get("period_key")
         or fact.get("period")
@@ -494,10 +399,6 @@ def _get_period(fact: Dict[str, Any]) -> str:
 
 
 def _get_scope(fact: Dict[str, Any]) -> str:
-    """
-    Get normalized scope from either raw or normalized fact.
-    """
-
     return (
         fact.get("scope_key")
         or fact.get("scope")
@@ -506,15 +407,268 @@ def _get_scope(fact: Dict[str, Any]) -> str:
 
 
 def _get_unit(fact: Dict[str, Any]) -> str:
-    """
-    Get normalized unit from either raw or normalized fact.
-    """
-
     return (
         fact.get("unit_key")
         or fact.get("unit")
         or ""
     )
+
+
+def _get_evidence(fact: Dict[str, Any]) -> str:
+    return str(
+        fact.get("evidence")
+        or ""
+    ).strip()
+
+
+def _get_metric(fact: Dict[str, Any]) -> str:
+    return str(
+        fact.get("metric_key")
+        or fact.get("metric")
+        or ""
+    ).strip().lower()
+
+
+def _get_entity(fact: Dict[str, Any]) -> str:
+    return str(
+        fact.get("entity_key")
+        or fact.get("entity")
+        or ""
+    ).strip().lower()
+
+
+# ============================================================
+# CONTEXT EXTRACTION
+# ============================================================
+
+def _normalize_text(text: Any) -> str:
+    """
+    Normalize free text for lightweight semantic context checks.
+    """
+
+    text = str(text or "").lower()
+
+    text = re.sub(
+        r"[^a-z0-9%₹$€£/\-\s]",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    ).strip()
+
+    return text
+
+
+def _context_markers(fact: Dict[str, Any]) -> set:
+    """
+    Extract generic contextual qualifiers from the fact evidence.
+
+    This is deliberately domain-agnostic. It does not contain
+    document-specific rules or hard-coded document facts.
+
+    Examples of qualifiers:
+        female
+        male
+        permanent
+        contract
+        domestic
+        international
+        quarterly
+        annual
+        per day
+        per month
+        consolidated
+        standalone
+        segment
+        subsidiary
+        ESOP
+    """
+
+    evidence = _normalize_text(_get_evidence(fact))
+
+    markers = set()
+
+    marker_groups = {
+        "female": [
+            "female",
+            "women",
+            "woman",
+        ],
+        "male": [
+            "male",
+            "men",
+            "man",
+        ],
+        "permanent": [
+            "permanent employee",
+            "permanent employees",
+            "permanent workforce",
+        ],
+        "contract": [
+            "contract employee",
+            "contract employees",
+            "contract worker",
+            "contract workers",
+            "contractual",
+        ],
+        "temporary": [
+            "temporary employee",
+            "temporary employees",
+            "temporary worker",
+            "temporary workers",
+        ],
+        "esop": [
+            "esop",
+            "employee stock option",
+            "employee stock options",
+        ],
+        "domestic": [
+            "domestic",
+        ],
+        "international": [
+            "international",
+            "overseas",
+        ],
+        "export": [
+            "export",
+            "exports",
+        ],
+        "import": [
+            "import",
+            "imports",
+        ],
+        "consolidated": [
+            "consolidated",
+        ],
+        "standalone": [
+            "standalone",
+        ],
+        "segment": [
+            "segment",
+            "business segment",
+            "reportable segment",
+        ],
+        "subsidiary": [
+            "subsidiary",
+            "subsidiaries",
+        ],
+        "quarterly": [
+            "quarter",
+            "quarterly",
+            "q1",
+            "q2",
+            "q3",
+            "q4",
+        ],
+        "annual": [
+            "annual",
+            "financial year",
+            "fiscal year",
+            "fy ",
+        ],
+        "ytd": [
+            "year to date",
+            "ytd",
+        ],
+    }
+
+    for marker, phrases in marker_groups.items():
+        if any(phrase in evidence for phrase in phrases):
+            markers.add(marker)
+
+    # Detect generic "per X" measurement context.
+    if re.search(r"\bper\s+day\b", evidence):
+        markers.add("per_day")
+
+    if re.search(r"\bper\s+month\b", evidence):
+        markers.add("per_month")
+
+    if re.search(r"\bper\s+year\b", evidence):
+        markers.add("per_year")
+
+    if re.search(r"\bper\s+employee\b", evidence):
+        markers.add("per_employee")
+
+    if re.search(r"\bper\s+customer\b", evidence):
+        markers.add("per_customer")
+
+    return markers
+
+
+def _contexts_are_conflicting(
+    fact_a: Dict[str, Any],
+    fact_b: Dict[str, Any],
+) -> bool:
+    """
+    Detect clearly different semantic populations or contexts.
+
+    This prevents comparisons such as:
+
+        total employees vs female employees
+        permanent employees vs contract employees
+        ESOP holders vs total employees
+        domestic revenue vs international revenue
+
+    from being classified as contradictions.
+    """
+
+    markers_a = _context_markers(fact_a)
+    markers_b = _context_markers(fact_b)
+
+    if not markers_a or not markers_b:
+        return False
+
+    mutually_exclusive_groups = [
+        {"female", "male"},
+        {"permanent", "contract"},
+        {"permanent", "temporary"},
+        {"contract", "temporary"},
+        {"domestic", "international"},
+        {"export", "import"},
+        {"consolidated", "standalone"},
+        {"annual", "quarterly"},
+    ]
+
+    for group in mutually_exclusive_groups:
+        if len(markers_a.intersection(group)) == 1:
+            if len(markers_b.intersection(group)) == 1:
+                if (
+                    markers_a.intersection(group)
+                    != markers_b.intersection(group)
+                ):
+                    return True
+
+    # A specialized subset should not be compared directly with
+    # the overall population.
+    subset_markers = {
+        "female",
+        "male",
+        "permanent",
+        "contract",
+        "temporary",
+        "esop",
+        "domestic",
+        "international",
+        "segment",
+        "subsidiary",
+        "per_employee",
+        "per_customer",
+    }
+
+    subset_a = markers_a.intersection(subset_markers)
+    subset_b = markers_b.intersection(subset_markers)
+
+    if subset_a != subset_b:
+        # If one fact has contextual qualifiers and the other
+        # does not, the contexts are not safely comparable.
+        if subset_a or subset_b:
+            return True
+
+    return False
 
 
 # ============================================================
@@ -527,9 +681,6 @@ def _values_are_equal(
 ) -> bool:
     """
     Compare normalized numerical values safely.
-
-    A small relative tolerance is used because values may originate
-    from decimal arithmetic or floating-point parsing.
     """
 
     if value_a is None or value_b is None:
@@ -541,11 +692,9 @@ def _values_are_equal(
     except (TypeError, ValueError):
         return False
 
-    # Exact comparison first.
     if a == b:
         return True
 
-    # Relative tolerance for large values.
     difference = abs(a - b)
     scale = max(abs(a), abs(b), 1.0)
 
@@ -553,6 +702,37 @@ def _values_are_equal(
         1e-9 * scale,
         1e-6,
     )
+
+
+# ============================================================
+# RELATIONSHIP RESULT HELPERS
+# ============================================================
+
+def _result(
+    relationship: str,
+    reason: str,
+    value_a: Any = None,
+    value_b: Any = None,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """
+    Build a consistent relationship result.
+    """
+
+    result = {
+        "relationship": relationship,
+        "reason": reason,
+    }
+
+    if value_a is not None:
+        result["normalized_value_a"] = value_a
+
+    if value_b is not None:
+        result["normalized_value_b"] = value_b
+
+    result.update(extra)
+
+    return result
 
 
 # ============================================================
@@ -568,67 +748,63 @@ def classify_relationship(
 
     Possible relationships:
 
-        - corroboration
-        - contradiction
-        - contextual_difference
-        - incomparable
-        - uncertain
+        corroboration
+        contradiction
+        contextual_difference
+        incomparable
+        uncertain
 
-    Decision order
-    --------------
+    Conservative decision process:
 
-    1. Same underlying concept?
-    2. Are measurement dimensions compatible?
-    3. Are values present?
-    4. Are periods different?
-    5. Are scopes different?
-    6. Do normalized values agree?
+        1. Validate facts.
+        2. Verify same underlying concept.
+        3. Verify measurement compatibility.
+        4. Verify numerical values.
+        5. Check explicit semantic context.
+        6. Check reporting period.
+        7. Check scope.
+        8. Compare values only when the context is genuinely comparable.
 
-    Important:
+    The key principle is:
 
-    Different units/dimensions are classified as
-    ``incomparable``, NOT ``contextual_difference``.
+        Different values alone are NOT sufficient evidence
+        of contradiction.
 
-    Contextual difference is reserved for cases such as:
-
-        FY2022 revenue = $500M
-        FY2024 revenue = $900M
-
-    These facts can be meaningfully compared, but they describe
-    different reporting contexts.
+    Contradiction requires comparable metric, entity,
+    measurement dimension, period, scope, and semantic population.
     """
 
     # ---------------------------------------------------------
-    # 1. Normalize raw facts if necessary.
+    # 1. Normalize facts.
     # ---------------------------------------------------------
 
     prepared_a = _prepare_fact(fact_a)
     prepared_b = _prepare_fact(fact_b)
 
     if not prepared_a or not prepared_b:
-        return {
-            "relationship": "uncertain",
-            "reason": "One or both facts are invalid or empty.",
-        }
+        return _result(
+            "uncertain",
+            "One or both facts are invalid or empty.",
+        )
 
     # ---------------------------------------------------------
-    # 2. Determine whether the facts describe the same concept.
+    # 2. Same underlying concept?
     # ---------------------------------------------------------
 
     if not facts_match(
         prepared_a,
         prepared_b,
     ):
-        return {
-            "relationship": "incomparable",
-            "reason": (
-                "The facts do not refer to the same underlying "
-                "entity and metric."
+        return _result(
+            "incomparable",
+            (
+                "The facts do not refer to the same "
+                "underlying entity and metric."
             ),
-        }
+        )
 
     # ---------------------------------------------------------
-    # 3. Check measurement dimensions BEFORE comparing values.
+    # 3. Measurement compatibility.
     # ---------------------------------------------------------
 
     unit_a = _get_unit(prepared_a)
@@ -641,34 +817,34 @@ def classify_relationship(
         dimension_a = _unit_dimension(unit_a)
         dimension_b = _unit_dimension(unit_b)
 
-        return {
-            "relationship": "incomparable",
-            "reason": (
+        return _result(
+            "incomparable",
+            (
                 "The facts use incompatible measurement "
                 "dimensions and cannot be directly compared."
             ),
-            "unit_a": normalize_unit(unit_a),
-            "unit_b": normalize_unit(unit_b),
-            "dimension_a": dimension_a,
-            "dimension_b": dimension_b,
-        }
+            unit_a=normalize_unit(unit_a),
+            unit_b=normalize_unit(unit_b),
+            dimension_a=dimension_a,
+            dimension_b=dimension_b,
+        )
 
     # ---------------------------------------------------------
-    # 4. Values are required for numerical comparison.
+    # 4. Values are required.
     # ---------------------------------------------------------
 
     value_a = prepared_a.get("value")
     value_b = prepared_b.get("value")
 
     if value_a is None or value_b is None:
-        return {
-            "relationship": "uncertain",
-            "reason": (
+        return _result(
+            "uncertain",
+            (
                 "The facts appear conceptually comparable, "
                 "but one or both facts do not contain a "
                 "comparable numerical value."
             ),
-        }
+        )
 
     # ---------------------------------------------------------
     # 5. Normalize values.
@@ -677,105 +853,218 @@ def classify_relationship(
     normalized_value_a = normalize_value(value_a)
     normalized_value_b = normalize_value(value_b)
 
-    # If normalization still leaves non-numeric values,
-    # numerical relationship classification is unsafe.
     if not isinstance(
         normalized_value_a,
         (int, float),
     ):
-        return {
-            "relationship": "uncertain",
-            "reason": (
-                "The first fact contains a value that could "
-                "not be normalized numerically."
+        return _result(
+            "uncertain",
+            (
+                "The first fact contains a value that "
+                "could not be normalized numerically."
             ),
-        }
+        )
 
     if not isinstance(
         normalized_value_b,
         (int, float),
     ):
-        return {
-            "relationship": "uncertain",
-            "reason": (
-                "The second fact contains a value that could "
-                "not be normalized numerically."
+        return _result(
+            "uncertain",
+            (
+                "The second fact contains a value that "
+                "could not be normalized numerically."
             ),
-        }
+        )
 
     # ---------------------------------------------------------
-    # 6. Compare reporting periods.
+    # 6. Semantic population/context.
+    # ---------------------------------------------------------
+
+    if _contexts_are_conflicting(
+        prepared_a,
+        prepared_b,
+    ):
+        return _result(
+            "contextual_difference",
+            (
+                "The facts use the same metric but describe "
+                "different semantic populations, segments, "
+                "or measurement contexts."
+            ),
+            normalized_value_a,
+            normalized_value_b,
+        )
+
+    # ---------------------------------------------------------
+    # 7. Reporting periods.
     # ---------------------------------------------------------
 
     period_a = _get_period(prepared_a)
     period_b = _get_period(prepared_b)
 
-    if (
-        period_a
-        and period_b
-        and period_a != period_b
-    ):
-        return {
-            "relationship": "contextual_difference",
-            "reason": (
-                "The facts describe the same metric but "
-                "refer to different reporting periods."
+    if period_a and period_b:
+        if period_a != period_b:
+            return _result(
+                "contextual_difference",
+                (
+                    "The facts describe the same metric but "
+                    "refer to different reporting periods."
+                ),
+                normalized_value_a,
+                normalized_value_b,
+            )
+
+    elif period_a or period_b:
+        # One known period and one unknown period.
+        # We cannot safely call different values a contradiction.
+        return _result(
+            "contextual_difference",
+            (
+                "The facts have incomplete period information; "
+                "one fact specifies a reporting period while "
+                "the other does not."
             ),
-            "normalized_value_a": normalized_value_a,
-            "normalized_value_b": normalized_value_b,
-        }
+            normalized_value_a,
+            normalized_value_b,
+        )
 
     # ---------------------------------------------------------
-    # 7. Compare scopes.
+    # 8. Reporting scopes.
     # ---------------------------------------------------------
 
     scope_a = _get_scope(prepared_a)
     scope_b = _get_scope(prepared_b)
 
-    if (
-        scope_a
-        and scope_b
-        and scope_a != scope_b
-    ):
-        return {
-            "relationship": "contextual_difference",
-            "reason": (
-                "The facts describe the same metric but "
-                "refer to different reporting scopes."
+    if scope_a and scope_b:
+        if scope_a != scope_b:
+            return _result(
+                "contextual_difference",
+                (
+                    "The facts describe the same metric but "
+                    "refer to different reporting scopes."
+                ),
+                normalized_value_a,
+                normalized_value_b,
+            )
+
+    elif scope_a or scope_b:
+        # One known scope and one unknown scope.
+        return _result(
+            "contextual_difference",
+            (
+                "The facts have incomplete scope information; "
+                "one fact specifies a scope while the other does not."
             ),
-            "normalized_value_a": normalized_value_a,
-            "normalized_value_b": normalized_value_b,
-        }
+            normalized_value_a,
+            normalized_value_b,
+        )
 
     # ---------------------------------------------------------
-    # 8. Compare normalized values.
+    # 9. Entity context.
+    # ---------------------------------------------------------
+
+    entity_a = _get_entity(prepared_a)
+    entity_b = _get_entity(prepared_b)
+
+    if entity_a and entity_b and entity_a != entity_b:
+        return _result(
+            "incomparable",
+            (
+                "The facts refer to different entities and "
+                "therefore cannot be treated as a direct "
+                "corroboration or contradiction."
+            ),
+            normalized_value_a,
+            normalized_value_b,
+        )
+
+    # ---------------------------------------------------------
+    # 10. Missing measurement units.
+    # ---------------------------------------------------------
+
+    # If both units are absent, we can compare only when the
+    # rest of the context is sufficiently strong.
+    #
+    # This deliberately avoids aggressive contradiction claims
+    # based solely on metric names.
+
+    if not unit_a and not unit_b:
+        evidence_a = _get_evidence(prepared_a)
+        evidence_b = _get_evidence(prepared_b)
+
+        # If neither evidence contains meaningful measurement
+        # context, identical values are still safe to corroborate,
+        # but differing values are uncertain rather than contradiction.
+        if _values_are_equal(
+            normalized_value_a,
+            normalized_value_b,
+        ):
+            return _result(
+                "corroboration",
+                (
+                    "Both facts report the same normalized value "
+                    "and no conflicting measurement context was found."
+                ),
+                normalized_value_a,
+                normalized_value_b,
+            )
+
+        if not evidence_a or not evidence_b:
+            return _result(
+                "uncertain",
+                (
+                    "The facts have no explicit measurement units "
+                    "or sufficient evidence context to safely "
+                    "classify the differing values as a contradiction."
+                ),
+                normalized_value_a,
+                normalized_value_b,
+            )
+
+        # Evidence exists, but without explicit units the engine
+        # remains conservative.
+        return _result(
+            "uncertain",
+            (
+                "The facts share a metric but lack explicit units; "
+                "different values are not sufficient evidence of "
+                "a genuine contradiction."
+            ),
+            normalized_value_a,
+            normalized_value_b,
+        )
+
+    # ---------------------------------------------------------
+    # 11. Compare normalized values.
     # ---------------------------------------------------------
 
     if _values_are_equal(
         normalized_value_a,
         normalized_value_b,
     ):
-        return {
-            "relationship": "corroboration",
-            "reason": (
+        return _result(
+            "corroboration",
+            (
                 "Both facts report the same normalized value "
                 "for the same comparable context."
             ),
-            "normalized_value_a": normalized_value_a,
-            "normalized_value_b": normalized_value_b,
-        }
+            normalized_value_a,
+            normalized_value_b,
+        )
 
     # ---------------------------------------------------------
-    # 9. Same concept, same comparable context, different value.
+    # 12. Genuine contradiction.
     # ---------------------------------------------------------
 
-    return {
-        "relationship": "contradiction",
-        "reason": (
-            "The facts refer to the same metric and comparable "
-            "measurement context, but report different "
+    return _result(
+        "contradiction",
+        (
+            "The facts refer to the same metric, compatible "
+            "measurement dimension, and comparable reporting "
+            "context, but report materially different "
             "normalized values."
         ),
-        "normalized_value_a": normalized_value_a,
-        "normalized_value_b": normalized_value_b,
-    }
+        normalized_value_a,
+        normalized_value_b,
+    )
