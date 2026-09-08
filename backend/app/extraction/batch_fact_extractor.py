@@ -2,8 +2,135 @@ import json
 from typing import List, Dict
 
 from .llm_client import generate_text
+from .fallback_extractor import extract_facts_fallback
 from app.reasoning.evidence_verifier import verify_evidence
 from app.extraction.batch_processor import create_batches
+
+
+def _prepare_chunks(
+    chunks: List[Dict]
+) -> List[Dict]:
+    """
+    Ensure every chunk has a stable global chunk_id.
+
+    Existing chunk_id values are preserved when valid.
+    Otherwise, IDs are assigned using the original
+    position in the input list.
+    """
+
+    prepared = []
+
+    for index, chunk in enumerate(chunks):
+
+        item = dict(chunk)
+
+        chunk_id = item.get("chunk_id")
+
+        if not isinstance(chunk_id, int):
+            chunk_id = index
+
+        item["chunk_id"] = chunk_id
+
+        prepared.append(item)
+
+    return prepared
+
+
+def _verify_and_enrich_fact(
+    fact: Dict,
+    chunks_by_id: Dict[int, Dict]
+) -> Dict | None:
+    """
+    Validate an extracted fact and attach trusted
+    source metadata from the original chunk.
+    """
+
+    if not isinstance(fact, dict):
+        return None
+
+    chunk_id = fact.get("chunk_id")
+
+    if not isinstance(chunk_id, int):
+        return None
+
+    source_chunk = chunks_by_id.get(chunk_id)
+
+    if source_chunk is None:
+        return None
+
+    evidence = fact.get("evidence")
+
+    if not isinstance(evidence, str):
+        return None
+
+    evidence_verified = verify_evidence(
+        fact,
+        source_chunk.get("chunk_text", "")
+    )
+
+    if not evidence_verified:
+        return None
+
+    enriched_fact = dict(fact)
+
+    # Source metadata comes from our pipeline,
+    # not from the LLM.
+    enriched_fact["page_number"] = (
+        source_chunk.get("page_number")
+    )
+
+    enriched_fact["source_document"] = (
+        source_chunk.get("source_document")
+    )
+
+    enriched_fact["evidence_verified"] = True
+
+    return enriched_fact
+
+
+def _run_fallback(
+    chunks: List[Dict]
+) -> List[Dict]:
+    """
+    Run deterministic extraction when the LLM
+    is unavailable or has reached its quota.
+    """
+
+    if not chunks:
+        return []
+
+    print(
+        f"Running deterministic fallback on "
+        f"{len(chunks)} chunks..."
+    )
+
+    fallback_facts = extract_facts_fallback(
+        chunks
+    )
+
+    chunks_by_id = {
+        chunk["chunk_id"]: chunk
+        for chunk in chunks
+    }
+
+    verified_facts = []
+
+    for fact in fallback_facts:
+
+        verified = _verify_and_enrich_fact(
+            fact,
+            chunks_by_id
+        )
+
+        if verified:
+            verified_facts.append(verified)
+
+    print(
+        f"Fallback extraction complete: "
+        f"{len(verified_facts)} verified facts."
+    )
+
+    return verified_facts
 
 
 def extract_facts_from_batches(
@@ -11,19 +138,30 @@ def extract_facts_from_batches(
     batch_size: int = 3
 ) -> List[Dict]:
     """
-    Extract meaningful structured facts from document chunks
-    in batches using the configured LLM.
+    Extract meaningful structured facts from document
+    chunks using an LLM when available, with a
+    deterministic fallback when the LLM fails.
 
     The extractor is generic and document-agnostic.
     """
 
+    if not chunks:
+        return []
+
+    prepared_chunks = _prepare_chunks(
+        chunks
+    )
+
     batches = create_batches(
-        chunks,
+        prepared_chunks,
         batch_size=batch_size
     )
 
     facts = []
+
     total_batches = len(batches)
+
+    llm_available = True
 
     for batch_index, batch in enumerate(
         batches,
@@ -36,24 +174,25 @@ def extract_facts_from_batches(
             f"({len(batch)} chunks)..."
         )
 
-        numbered_chunks = []
+        # ---------------------------------------------------------
+        # If the LLM has already failed or hit its quota,
+        # use deterministic fallback for the remaining batches.
+        # ---------------------------------------------------------
 
-        for chunk_index, chunk in enumerate(batch):
+        if not llm_available:
 
-            numbered_chunks.append({
-                "chunk_id": chunk_index,
-                "page_number": chunk.get("page_number"),
-                "source_document": chunk.get(
-                    "source_document"
-                ),
-                "chunk_text": chunk.get(
-                    "chunk_text",
-                    ""
-                ),
-            })
+            fallback_facts = _run_fallback(
+                batch
+            )
+
+            facts.extend(
+                fallback_facts
+            )
+
+            continue
 
         # ---------------------------------------------------------
-        # Generic fact extraction prompt
+        # Build the LLM prompt using stable global chunk IDs.
         # ---------------------------------------------------------
 
         prompt = """
@@ -126,23 +265,6 @@ period
 scope
 evidence
 
-Example:
-
-{
-  "facts": [
-    {
-      "chunk_id": 0,
-      "entity": "Example Company",
-      "metric": "Revenue",
-      "value": 100,
-      "unit": "million USD",
-      "period": "FY2025",
-      "scope": null,
-      "evidence": "Example Company reported revenue of 100 million USD in FY2025."
-    }
-  ]
-}
-
 If no meaningful facts are present, return exactly:
 
 {
@@ -154,12 +276,7 @@ Do not return explanations.
 Do not return additional keys.
 """
 
-
-        # ---------------------------------------------------------
-        # Add document passages
-        # ---------------------------------------------------------
-
-        for item in numbered_chunks:
+        for item in batch:
 
             prompt += f"""
 
@@ -174,56 +291,52 @@ DOCUMENT TEXT:
 
 """
 
-
         # ---------------------------------------------------------
-        # Call LLM
+        # LLM extraction
         # ---------------------------------------------------------
 
         try:
 
-            output = generate_text(prompt)
+            output = generate_text(
+                prompt
+            )
 
             cleaned_output = output.strip()
 
-
-            # -----------------------------------------------------
-            # Defensive markdown removal
-            # -----------------------------------------------------
-
             if cleaned_output.startswith("```"):
 
-                if cleaned_output.startswith("```json"):
-                    cleaned_output = cleaned_output[
-                        len("```json"):
-                    ]
+                if cleaned_output.startswith(
+                    "```json"
+                ):
+                    cleaned_output = (
+                        cleaned_output[
+                            len("```json"):
+                        ]
+                    )
 
-                elif cleaned_output.startswith("```"):
-                    cleaned_output = cleaned_output[
-                        len("```"):
-                    ]
+                else:
+                    cleaned_output = (
+                        cleaned_output[
+                            len("```"):
+                        ]
+                    )
 
-                if cleaned_output.endswith("```"):
-                    cleaned_output = cleaned_output[
-                        :-len("```")
-                    ]
+                if cleaned_output.endswith(
+                    "```"
+                ):
+                    cleaned_output = (
+                        cleaned_output[
+                            :-len("```"):
+                        ]
+                    )
 
-                cleaned_output = cleaned_output.strip()
+                cleaned_output = (
+                    cleaned_output.strip()
+                )
 
-
-            # -----------------------------------------------------
-            # Parse JSON
-            # -----------------------------------------------------
-
-            parsed = json.loads(cleaned_output)
-
-
-            # -----------------------------------------------------
-            # Expected structure:
-            #
-            # {
-            #     "facts": [...]
-            # }
-            # -----------------------------------------------------
+            parsed = json.loads(
+                cleaned_output
+            )
 
             if (
                 isinstance(parsed, dict)
@@ -235,120 +348,76 @@ DOCUMENT TEXT:
 
                 extracted = parsed["facts"]
 
-
-            # -----------------------------------------------------
-            # Backward compatibility with older tests/mocks
-            # -----------------------------------------------------
-
             elif isinstance(parsed, list):
 
                 extracted = parsed
 
-
             else:
 
                 print(
-                    "LLM returned an unexpected JSON structure."
+                    "LLM returned an unexpected "
+                    "JSON structure."
+                )
+
+                # Treat invalid LLM output as a
+                # failure for this batch.
+                fallback_facts = _run_fallback(
+                    batch
+                )
+
+                facts.extend(
+                    fallback_facts
                 )
 
                 continue
 
-
-            # -----------------------------------------------------
-            # Validate and enrich extracted facts
-            # -----------------------------------------------------
+            chunks_by_id = {
+                chunk["chunk_id"]: chunk
+                for chunk in batch
+            }
 
             for fact in extracted:
 
-                if not isinstance(fact, dict):
-                    continue
-
-
-                chunk_id = fact.get("chunk_id")
-
-
-                # chunk_id must be an integer
-                if not isinstance(chunk_id, int):
-                    continue
-
-
-                # chunk_id must point to an actual batch item
-                if (
-                    chunk_id < 0
-                    or chunk_id >= len(batch)
-                ):
-                    continue
-
-
-                source_chunk = batch[chunk_id]
-
-
-                # -------------------------------------------------
-                # Add source metadata from our pipeline.
-                #
-                # These are NOT generated by the LLM.
-                # -------------------------------------------------
-
-                fact["page_number"] = (
-                    source_chunk.get(
-                        "page_number"
+                verified = (
+                    _verify_and_enrich_fact(
+                        fact,
+                        chunks_by_id
                     )
                 )
 
-                fact["source_document"] = (
-                    source_chunk.get(
-                        "source_document"
+                if verified:
+                    facts.append(
+                        verified
                     )
-                )
-
-
-                # -------------------------------------------------
-                # Verify that the evidence actually exists
-                # in the original source chunk.
-                # -------------------------------------------------
-
-                evidence_verified = verify_evidence(
-                    fact,
-                    source_chunk.get(
-                        "chunk_text",
-                        ""
-                    )
-                )
-
-                fact["evidence_verified"] = (
-                    evidence_verified
-                )
-
-
-                # -------------------------------------------------
-                # Only retain grounded facts.
-                # -------------------------------------------------
-
-                if evidence_verified:
-
-                    facts.append(fact)
-
-
-        # ---------------------------------------------------------
-        # Error handling
-        # ---------------------------------------------------------
 
         except json.JSONDecodeError:
 
             print(
-                "Could not parse LLM response as JSON."
+                "Could not parse LLM response "
+                "as JSON."
             )
 
-            continue
+            fallback_facts = _run_fallback(
+                batch
+            )
 
+            facts.extend(
+                fallback_facts
+            )
 
         except Exception as error:
 
             error_text = str(error)
 
+            print(
+                f"LLM batch extraction failed: "
+                f"{error}"
+            )
 
             # -----------------------------------------------------
-            # Rate-limit handling
+            # Rate limit / quota exhaustion.
+            # Stop using the LLM for the remainder
+            # of this extraction run.
             # -----------------------------------------------------
 
             if (
@@ -357,29 +426,28 @@ DOCUMENT TEXT:
                 in error_text
                 or "rate_limit"
                 in error_text.lower()
+                or "quota" in error_text.lower()
             ):
 
                 print(
-                    "LLM rate limit reached. "
-                    "Stopping batch extraction gracefully."
+                    "LLM quota/rate limit reached. "
+                    "Switching to deterministic "
+                    "fallback for remaining batches."
                 )
 
-                break
-
+                llm_available = False
 
             # -----------------------------------------------------
-            # General LLM failure
+            # Fallback immediately for the failed batch.
             # -----------------------------------------------------
 
-            print(
-                f"LLM batch extraction failed: "
-                f"{error}"
+            fallback_facts = _run_fallback(
+                batch
             )
 
-
-    # -------------------------------------------------------------
-    # Final result
-    # -------------------------------------------------------------
+            facts.extend(
+                fallback_facts
+            )
 
     print(
         f"Batch extraction complete: "

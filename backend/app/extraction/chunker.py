@@ -28,5 +28,6 @@ def create_chunks(
     "chunk_text": chunk_text,
     "source_document": source_document
 })
+            
 
     return chunks
