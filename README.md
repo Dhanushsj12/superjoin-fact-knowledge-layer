@@ -107,7 +107,13 @@ The system is designed to work with additional PDFs without requiring document-s
                   | Knowledge Layer / UI |
                   +----------------------+
 ```
+## Architecture
 
+The system follows a modular pipeline for extracting, validating, normalizing, and reasoning over facts across multiple PDF documents.
+
+<p align="center">
+  <img src="./architecture diagram.png" alt="Fact Knowledge Layer Architecture" width="100%">
+</p>
 ### Design Principle
 
 The LLM is **not responsible for the entire system**.
